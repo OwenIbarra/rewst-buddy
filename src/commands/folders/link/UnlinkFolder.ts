@@ -12,7 +12,11 @@ export class UnlinkFolder extends GenericCommand {
 			throw log.error(`There is no link to clear for uri ${uri.toString()}`);
 		}
 
+		// Remove all template links whose files are inside this folder
+		const removed = LinkManager.removeDescendantLinks(uri);
+
+		// Remove the folder link itself
 		await LinkManager.removeLink(uri.toString());
-		log.notifyInfo(`SUCCESS: Unlinked folder from uri ${uri.toString()}`);
+		log.notifyInfo(`SUCCESS: Unlinked folder and removed ${removed} template links`);
 	}
 }

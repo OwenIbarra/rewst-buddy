@@ -3,7 +3,7 @@
 	"name": "rewst-buddy",
 	"displayName": "rewst-buddy",
 	"description": "Buddy for Rewst (Templates)",
-	"version": "0.39.0",
+	"version": "0.40.0",
 	"icon": "media/rewst-buddy.png",
 	"engines": {
 		"vscode": "^1.107.0"
@@ -210,6 +210,10 @@
 			{
 				"command": "rewst-buddy.prefix.UnlinkAllTemplates",
 				"title": "Rewst Buddy: Unlink All Templates"
+			},
+			{
+				"command": "rewst-buddy.prefix.ValidateLinks",
+				"title": "Rewst Buddy: Validate & Clean Up Links"
 			},
 			{
 				"command": "rewst-buddy.prefix.UnlinkTemplate",

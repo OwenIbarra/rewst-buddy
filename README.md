@@ -96,9 +96,9 @@ When opening templates via `Open Template` or `Open Template from URL`:
 - Opens the existing linked file instead of creating a new untitled document
 - If linked to multiple files, displays a picker to select which file to open
 
-### File Rename Support
+### File Rename & Delete Support
 
-Template links automatically update when you rename or move files - no broken links when reorganizing your workspace.
+Template links automatically update when you rename or move files - no broken links when reorganizing your workspace. When files are deleted, their links are automatically cleaned up so templates can be re-fetched.
 
 ### Template Navigation (v0.35)
 
@@ -185,6 +185,7 @@ All commands are also available via Command Palette (Cmd/Ctrl + Shift + P):
 - `Disable Sync-On-Save` - Disable automatic sync for current file
 - `Unlink Template` - Remove template link from current file
 - `Unlink All Templates` - Remove all file-to-template associations
+- `Validate & Clean Up Links` - Audit links, remove duplicates and stale entries (v0.40)
 
 **Server**
 

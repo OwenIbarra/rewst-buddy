@@ -273,6 +273,53 @@ suite('Unit: LinkManager', () => {
 		});
 	});
 
+	suite('removeDescendantLinks()', () => {
+		test('should remove all links under a folder', () => {
+			const folderUri = vscode.Uri.file('/test/folder');
+
+			const link1: TemplateLink = {
+				uriString: vscode.Uri.file('/test/folder/file1.txt').toString(),
+				org: { id: 'org-1', name: 'Org' },
+				type: 'Template',
+				template: { id: 't1', name: 'T1', updatedAt: '' } as any,
+				bodyHash: 'h1',
+			};
+
+			const link2: TemplateLink = {
+				uriString: vscode.Uri.file('/test/folder/sub/file2.txt').toString(),
+				org: { id: 'org-1', name: 'Org' },
+				type: 'Template',
+				template: { id: 't2', name: 'T2', updatedAt: '' } as any,
+				bodyHash: 'h2',
+			};
+
+			const outsideLink: TemplateLink = {
+				uriString: vscode.Uri.file('/test/other/file3.txt').toString(),
+				org: { id: 'org-1', name: 'Org' },
+				type: 'Template',
+				template: { id: 't3', name: 'T3', updatedAt: '' } as any,
+				bodyHash: 'h3',
+			};
+
+			LinkManager.addLink(link1);
+			LinkManager.addLink(link2);
+			LinkManager.addLink(outsideLink);
+
+			const removed = LinkManager.removeDescendantLinks(folderUri);
+
+			assert.strictEqual(removed, 2);
+			assert.strictEqual(LinkManager.isLinked(vscode.Uri.file('/test/folder/file1.txt')), false);
+			assert.strictEqual(LinkManager.isLinked(vscode.Uri.file('/test/folder/sub/file2.txt')), false);
+			assert.strictEqual(LinkManager.isLinked(vscode.Uri.file('/test/other/file3.txt')), true);
+		});
+
+		test('should return 0 when no descendants exist', () => {
+			const folderUri = vscode.Uri.file('/test/empty-folder');
+			const removed = LinkManager.removeDescendantLinks(folderUri);
+			assert.strictEqual(removed, 0);
+		});
+	});
+
 	suite('purgeDuplicates()', () => {
 		test('should remove duplicate links keeping the most recent', async () => {
 			const templateId = 'dup-template-id';
@@ -321,6 +368,31 @@ suite('Unit: LinkManager', () => {
 			LinkManager.addLink(link);
 			const removed = await LinkManager.purgeDuplicates();
 			assert.strictEqual(removed, 0);
+		});
+	});
+
+	suite('getAllTemplateLinks()', () => {
+		test('should return only template links', () => {
+			const templateLink: TemplateLink = {
+				uriString: vscode.Uri.file('/test/file.txt').toString(),
+				org: { id: 'org-1', name: 'Org' },
+				type: 'Template',
+				template: { id: 't1', name: 'T', updatedAt: '' } as any,
+				bodyHash: 'h',
+			};
+
+			const folderLink: FolderLink = {
+				uriString: vscode.Uri.file('/test/folder').toString(),
+				org: { id: 'org-1', name: 'Org' },
+				type: 'Folder',
+			};
+
+			LinkManager.addLink(templateLink);
+			LinkManager.addLink(folderLink);
+
+			const templateLinks = LinkManager.getAllTemplateLinks();
+			assert.strictEqual(templateLinks.length, 1);
+			assert.strictEqual(templateLinks[0].type, 'Template');
 		});
 	});
 

@@ -23,6 +23,7 @@ export const LinkManager = new (class _ implements vscode.Disposable {
 
 	init(): _ {
 		this.disposables.push(vscode.workspace.onDidRenameFiles(e => this.handleRename(e)));
+		this.disposables.push(vscode.workspace.onDidDeleteFiles(e => this.handleDelete(e)));
 		return this;
 	}
 
@@ -76,6 +77,60 @@ export const LinkManager = new (class _ implements vscode.Disposable {
 		} finally {
 			this.endBatch();
 		}
+	}
+
+	private handleDelete(e: vscode.FileDeleteEvent): void {
+		log.trace('LinkManager.handleDelete: processing', { fileCount: e.files.length });
+
+		let removed = 0;
+		this.beginBatch();
+		try {
+			for (const uri of e.files) {
+				const uriString = uri.toString();
+
+				// Direct match (single file deleted)
+				if (this.linkMap.has(uriString)) {
+					this.removeLink(uriString);
+					removed++;
+					continue;
+				}
+
+				// Directory deleted — remove all descendant links
+				for (const linkedUri of this.getAllUriStrings()) {
+					if (isDescendant(uri, vscode.Uri.parse(linkedUri))) {
+						this.removeLink(linkedUri);
+						removed++;
+					}
+				}
+			}
+		} catch (error) {
+			log.error('LinkManager.handleDelete: failed', error);
+		} finally {
+			this.endBatch();
+		}
+
+		if (removed > 0) {
+			log.info(`LinkManager.handleDelete: removed ${removed} orphaned links`);
+		}
+	}
+
+	removeDescendantLinks(folderUri: vscode.Uri): number {
+		this.loadIfNotAlready();
+		let removed = 0;
+
+		this.beginBatch();
+		for (const uriString of this.getAllUriStrings()) {
+			if (isDescendant(folderUri, vscode.Uri.parse(uriString))) {
+				this.removeLink(uriString);
+				removed++;
+			}
+		}
+		this.endBatch();
+
+		if (removed > 0) {
+			log.info(`LinkManager.removeDescendantLinks: removed ${removed} links under ${folderUri.fsPath}`);
+		}
+		return removed;
 	}
 
 	clearTemplateLinks(): _ {

@@ -35,14 +35,12 @@ export class StatusBar implements vscode.Disposable {
 			return;
 		}
 
-		let link;
-		try {
-			link = LinkManager.getTemplateLink(activeEditor.document.uri);
-		} catch {
+		const rawLink = LinkManager.linkMap.get(activeEditor.document.uri.toString());
+		if (!rawLink || rawLink.type !== 'Template') {
 			this.clear();
-			log.error('We failed to get the link of the active document for some reason.');
 			return;
 		}
+		const link = rawLink as TemplateLink;
 		this.item.text = 'Rewst Buddy: Linked';
 		this.item.tooltip = this.buildTooltip(link);
 

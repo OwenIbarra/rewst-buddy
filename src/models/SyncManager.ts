@@ -1,7 +1,7 @@
 import type { SessionChangeEvent } from '@events';
 import { FolderLink, Link, TemplateLink } from '@models';
 import { FullTemplateFragment, Session, SessionManager } from '@sessions';
-import { findAllTemplateReferences, getHash, log, makeUniqueUri, writeTextFile } from '@utils';
+import { findAllTemplateReferences, getHash, log, makeUniqueUri, uriExists, writeTextFile } from '@utils';
 import vscode, { Uri } from 'vscode';
 import { LinkManager } from './LinkManager';
 import { SyncOnSaveManager } from './SyncOnSaveManager';
@@ -367,8 +367,24 @@ export const SyncManager = new (class _ implements vscode.Disposable {
 
 		const { org, uriString } = folderLink;
 
-		const ids = LinkManager.getOrgTemplateLinks(org).map(l => l.template.id);
-		log.debug('fetchFolder: existing template count', ids.length);
+		// Purge any existing duplicates before determining what's missing
+		await LinkManager.purgeDuplicates();
+
+		// Remove links where the file no longer exists on disk
+		const orgLinks = LinkManager.getOrgTemplateLinks(org);
+		let staleCount = 0;
+		for (const link of orgLinks) {
+			if (!(await uriExists(vscode.Uri.parse(link.uriString)))) {
+				LinkManager.removeLink(link.uriString);
+				staleCount++;
+			}
+		}
+		if (staleCount > 0) {
+			log.info(`fetchFolder: removed ${staleCount} stale links (files no longer on disk)`);
+		}
+
+		const existingIds = new Set(LinkManager.getOrgTemplateLinks(org).map(l => l.template.id));
+		log.debug('fetchFolder: existing template count', existingIds.size);
 
 		const session = SessionManager.getSessionForOrg(org.id);
 
@@ -379,7 +395,7 @@ export const SyncManager = new (class _ implements vscode.Disposable {
 		const templates = response.templates;
 		log.debug('fetchFolder: remote template count', templates.length);
 
-		const missingTemplates = templates.filter(t => !ids.includes(t.id));
+		const missingTemplates = templates.filter(t => !existingIds.has(t.id));
 		log.debug('fetchFolder: missing templates to fetch', missingTemplates.length);
 
 		if (missingTemplates.length === 0) {

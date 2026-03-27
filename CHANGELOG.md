@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.40.0] - 2026-03-27
+
+### Added
+
+- **Validate & Clean Up Links** - New command to audit and repair link state
+    - Purges duplicate links (keeps the most recently updated)
+    - Removes stale links where the local file no longer exists on disk
+    - Deletes orphaned duplicate files from disk
+    - Available via Command Palette: `Rewst Buddy: Validate & Clean Up Links`
+- **File Deletion Detection** - Links automatically removed when files are deleted
+    - New `onDidDeleteFiles` handler in LinkManager
+    - Handles both single file and directory deletions (removes all descendant links)
+- **Stale Link Cleanup in Folder Fetch** - `fetchFolder` now validates that linked files exist on disk before determining which templates are "missing"
+    - Removes links for deleted files so templates are re-fetched into the folder
+    - Prevents the "deleted files won't come back" issue
+
+### Changed
+
+- **Unlink Folder** - Now removes all descendant template links when a folder is unlinked
+    - Previously only removed the folder link itself, leaving template links orphaned
+- **Link Validation During Folder Fetch** - `fetchFolder` now cleans up duplicates and stale links before deciding what is missing
+    - Calls `purgeDuplicates` before determining missing templates
+    - Uses a `Set` for current template ID lookup after cleanup
+
+### Fixed
+
+- **Deleted files not re-fetching** - After deleting local files, `fetchFolder` thought templates still existed because stale links remained
+- **Orphaned links after unlink folder** - Template links persisted after their parent folder was unlinked
+
 ## [0.39.0] - 2026-03-26
 
 ### Added
