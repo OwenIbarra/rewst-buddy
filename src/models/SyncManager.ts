@@ -9,6 +9,7 @@ import { determineSyncAction } from './syncDecision';
 
 export const SyncManager = new (class _ implements vscode.Disposable {
 	private syncingUris = new Set<string>();
+	private fetchingOrgs = new Set<string>();
 	private disposables: vscode.Disposable[] = [];
 	private documentEventDisposables: vscode.Disposable[] = [];
 	private interval: NodeJS.Timeout | undefined;
@@ -50,7 +51,8 @@ export const SyncManager = new (class _ implements vscode.Disposable {
 			vscode.workspace.onDidOpenTextDocument(async doc => await this.checkAutoFetch(doc)),
 		);
 
-		// Start the folder fetch interval
+		// Fetch all folders immediately on activation, then every 15 minutes
+		this.fetchAllFolders();
 		this.interval = setInterval(() => this.fetchAllFolders(), 15 * 60 * 1000);
 	}
 
@@ -365,10 +367,30 @@ export const SyncManager = new (class _ implements vscode.Disposable {
 	async fetchFolder(folderLink: FolderLink) {
 		log.trace('fetchFolder: starting', { org: folderLink.org.name, uri: folderLink.uriString });
 
+		const { org } = folderLink;
+
+		// Prevent concurrent fetches for the same org
+		if (this.fetchingOrgs.has(org.id)) {
+			log.debug('fetchFolder: already fetching for org, skipping', org.id);
+			return;
+		}
+		this.fetchingOrgs.add(org.id);
+
+		try {
+			await this._fetchFolderInternal(folderLink);
+		} finally {
+			this.fetchingOrgs.delete(org.id);
+		}
+	}
+
+	private async _fetchFolderInternal(folderLink: FolderLink) {
 		const { org, uriString } = folderLink;
 
-		const ids = LinkManager.getOrgTemplateLinks(org).map(l => l.template.id);
-		log.debug('fetchFolder: existing template count', ids.length);
+		// Purge any existing duplicates before determining what's missing
+		await LinkManager.purgeDuplicates();
+
+		const existingIds = new Set(LinkManager.getOrgTemplateLinks(org).map(l => l.template.id));
+		log.debug('fetchFolder: existing template count', existingIds.size);
 
 		const session = SessionManager.getSessionForOrg(org.id);
 
@@ -379,7 +401,7 @@ export const SyncManager = new (class _ implements vscode.Disposable {
 		const templates = response.templates;
 		log.debug('fetchFolder: remote template count', templates.length);
 
-		const missingTemplates = templates.filter(t => !ids.includes(t.id));
+		const missingTemplates = templates.filter(t => !existingIds.has(t.id));
 		log.debug('fetchFolder: missing templates to fetch', missingTemplates.length);
 
 		if (missingTemplates.length === 0) {

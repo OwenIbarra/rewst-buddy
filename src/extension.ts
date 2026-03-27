@@ -30,6 +30,13 @@ export async function activate(context: vscode.ExtensionContext) {
 	// Register managers (self-register for their respective VS Code events)
 	// Note: SessionManager must init before SyncManager so sessions are loaded first
 	context.subscriptions.push(LinkManager.init());
+
+	// Purge duplicate links immediately on startup (before any sync operations)
+	const purged = await LinkManager.purgeDuplicates();
+	if (purged > 0) {
+		log.info(`Startup: purged ${purged} duplicate template links`);
+	}
+
 	context.subscriptions.push(SyncOnSaveManager.init());
 	context.subscriptions.push(await SessionManager.init());
 	context.subscriptions.push(TemplateMetadataStore.init());
