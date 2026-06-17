@@ -22,18 +22,30 @@ export type CapabilityAccess = 'read' | 'write';
  */
 export interface CapabilitySettings {
 	enableGraphqlTool: boolean;
+	enableWorkspaceTools: boolean;
+	enableWebTools: boolean;
 }
 
 /**
  * The session + org a capability handler runs against. The surface resolves and
- * validates the session before calling run, so handlers can assume it is live.
- * `sessions` is every active session, for org-discovery capabilities that span
- * orgs (e.g. list_orgs) and so do not depend on `session`/`orgId`.
+ * validates the session before calling run, so org-scoped handlers can assume it
+ * is live. `session` is optional because some capabilities need no Rewst session
+ * (e.g. list_template_links, web_search); those handlers ignore it. Org-scoped
+ * handlers call {@link requireSession}. `sessions` is every active session, for
+ * org-discovery capabilities that span orgs (e.g. list_orgs).
  */
 export interface CapabilityContext {
-	session: Session;
+	session?: Session;
 	orgId: string;
 	sessions: Session[];
+}
+
+/** Returns the context's session or throws an actionable error if absent. */
+export function requireSession(ctx: CapabilityContext): Session {
+	if (!ctx.session) {
+		throw new Error('No active Rewst session for this operation. Sign in to Rewst in VS Code first.');
+	}
+	return ctx.session;
 }
 
 export interface Capability {

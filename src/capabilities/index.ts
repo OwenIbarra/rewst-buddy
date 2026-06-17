@@ -1,4 +1,10 @@
-export type { Capability, CapabilityAccess, CapabilityContext, CapabilitySettings } from './Capability';
+export {
+	requireSession,
+	type Capability,
+	type CapabilityAccess,
+	type CapabilityContext,
+	type CapabilitySettings,
+} from './Capability';
 export {
 	CAPABILITY_REGISTRY,
 	chatCapabilities,

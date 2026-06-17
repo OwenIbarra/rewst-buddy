@@ -1,13 +1,18 @@
 import type { Capability, CapabilitySettings } from './Capability';
 import { GRAPHQL_CAPABILITIES } from './graphqlCapabilities';
 import { READ_CAPABILITIES } from './rewstReadCapabilities';
+import { WORKSPACE_CAPABILITIES } from './workspaceCapabilities';
 
 /**
  * The single source of truth for Rewst capabilities. Surfaces (chat, MCP) filter
  * this list by their own gates; adding a capability here surfaces it everywhere
  * it opts into. Names must be unique across the registry.
  */
-export const CAPABILITY_REGISTRY: Capability[] = [...GRAPHQL_CAPABILITIES, ...READ_CAPABILITIES];
+export const CAPABILITY_REGISTRY: Capability[] = [
+	...WORKSPACE_CAPABILITIES,
+	...GRAPHQL_CAPABILITIES,
+	...READ_CAPABILITIES,
+];
 
 const BY_NAME = new Map(CAPABILITY_REGISTRY.map(capability => [capability.spec.name, capability]));
 

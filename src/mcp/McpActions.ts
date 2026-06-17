@@ -67,10 +67,13 @@ function failFrom(error: McpError): McpResponse {
 }
 
 function capabilitySettings(): CapabilitySettings {
+	const ai = vscode.workspace.getConfiguration(`${extPrefix}.ai`);
+	// Workspace/web tools are chat-only (mcp:false), so their gates never affect
+	// the MCP surface; they are read here only to satisfy the shared settings shape.
 	return {
-		enableGraphqlTool: vscode.workspace
-			.getConfiguration(`${extPrefix}.ai`)
-			.get<boolean>('enableGraphqlTool', false),
+		enableGraphqlTool: ai.get<boolean>('enableGraphqlTool', false),
+		enableWorkspaceTools: ai.get<boolean>('enableWorkspaceTools', true),
+		enableWebTools: ai.get<boolean>('enableWebTools', false),
 	};
 }
 

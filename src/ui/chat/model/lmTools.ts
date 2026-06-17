@@ -1,25 +1,19 @@
-import { chatCapabilities } from '@capabilities';
+import { chatCapabilities, getCapability, type CapabilitySettings } from '@capabilities';
 import { extPrefix } from '@global';
 import { SessionManager, type Session } from '@sessions';
 import { log } from '@utils';
 import vscode from 'vscode';
-import {
-	approveMutationScope,
-	createGraphqlDeps,
-	graphqlMutationConfirmation,
-	graphqlMutationScope,
-} from '../tools/graphqlTool';
+import { approveMutationScope, graphqlMutationConfirmation, graphqlMutationScope } from '../tools/graphqlTool';
 import { describeRequestBrief, type ToolSpec } from '../tools/toolProtocol';
-import { runToolRequests, WORKSPACE_TOOL_SPECS } from '../tools/workspaceTools';
-import { WEB_TOOL_SPECS } from '../tools/webTools';
 
 /**
- * Exposes every vscode-tool protocol tool as a registered VS Code language
- * model tool, so they are invocable when the RoboRewsty chat model emits tool
- * calls (and visible to agent mode like any extension tool). The spec arrays
- * remain the single source of truth: registration iterates them, so registered
- * names always equal the text-protocol names, and packageManifest.test.ts
- * keeps the static package.json declarations in sync with the same arrays.
+ * Exposes every chat capability as a registered VS Code language model tool, so
+ * they are invocable when the RoboRewsty chat model emits tool calls (and
+ * visible to agent mode like any extension tool). The capability registry is the
+ * single source of truth: registration iterates the chat capabilities, so
+ * registered names always equal the registry names, packageManifest.test.ts
+ * keeps the static package.json declarations in sync with the same specs, and
+ * execution runs through each capability's handler — the same handlers MCP uses.
  */
 
 /** Snapshot of the rewst-buddy.ai.* switches that govern tool availability. */
@@ -34,21 +28,20 @@ interface GovernedSpec {
 	enabled: (settings: AiToolSettings) => boolean;
 }
 
-// The GraphQL chat tools are sourced from the capability registry (the single
-// source of truth). Their spec objects are reused verbatim there, so the chat
-// tool set and the package.json manifest are unchanged; execution still flows
-// through runToolRequests until Phase 2 converges it onto the registry.
-const REGISTRY_CHAT_GOVERNED: GovernedSpec[] = chatCapabilities().map(capability => ({
-	spec: capability.spec,
-	enabled: (s: AiToolSettings) => capability.enabled({ enableGraphqlTool: s.enableGraphqlTool }),
-}));
+// AiToolSettings is exactly the capability gate fields, so it passes straight
+// through to a capability's enabled predicate.
+function toCapabilitySettings(settings: AiToolSettings): CapabilitySettings {
+	return settings;
+}
 
-/** Every tool with the settings predicate that governs it. */
-export const GOVERNED_TOOL_SPECS: GovernedSpec[] = [
-	...WORKSPACE_TOOL_SPECS.map(spec => ({ spec, enabled: (s: AiToolSettings) => s.enableWorkspaceTools })),
-	...WEB_TOOL_SPECS.map(spec => ({ spec, enabled: (s: AiToolSettings) => s.enableWebTools })),
-	...REGISTRY_CHAT_GOVERNED,
-];
+/**
+ * Every chat tool with the settings predicate that governs it, sourced entirely
+ * from the capability registry.
+ */
+export const GOVERNED_TOOL_SPECS: GovernedSpec[] = chatCapabilities().map(capability => ({
+	spec: capability.spec,
+	enabled: (s: AiToolSettings) => capability.enabled(toCapabilitySettings(s)),
+}));
 
 export const ALL_TOOL_SPECS: ToolSpec[] = GOVERNED_TOOL_SPECS.map(entry => entry.spec);
 
@@ -261,16 +254,27 @@ export const LmToolRegistry = new (class LmToolRegistry implements vscode.Dispos
 				// permitted this resource — remember it so repeat edits skip the prompt.
 				const scope = graphqlMutationScope(name, options.input);
 				if (scope) approveMutationScope(scope);
-				const session = resolveGraphqlSession();
-				const [result] = await runToolRequests(
-					[{ tool: name, args: options.input ?? {} }],
-					undefined,
-					undefined,
-					session ? createGraphqlDeps(session) : undefined,
-				);
-				const text = result.ok ? result.output : `Error: ${result.output}`;
+				const text = await this.runCapability(name, options.input ?? {});
 				return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(text)]);
 			},
 		};
+	}
+
+	/**
+	 * Runs a chat capability through the registry — the same handler the MCP
+	 * surface uses. Org-scoped tools (GraphQL) get the chat's resolved session;
+	 * session-less tools (workspace, web) ignore it. Failures format as text so
+	 * the assistant sees the error rather than the turn crashing.
+	 */
+	private async runCapability(name: string, input: Record<string, unknown>): Promise<string> {
+		const capability = getCapability(name);
+		if (!capability) return `Error: unknown tool "${name}".`;
+		const session = resolveGraphqlSession();
+		const ctx = { session, orgId: session?.profile.org.id ?? '', sessions: SessionManager.getActiveSessions() };
+		try {
+			return await capability.run(input, ctx);
+		} catch (error) {
+			return `Error: ${error instanceof Error ? error.message : String(error)}`;
+		}
 	}
 })();

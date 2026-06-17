@@ -1,6 +1,6 @@
 import { runReadonlyGraphql } from '../ui/chat/tools/graphqlTool';
 import type { ToolSpec } from '../ui/chat/tools/toolProtocol';
-import type { Capability, CapabilityContext } from './Capability';
+import { requireSession, type Capability, type CapabilityContext } from './Capability';
 
 /**
  * Read-only Rewst capabilities exposed over the MCP server. Each operates on the
@@ -156,7 +156,7 @@ async function runListOrgs(_input: Record<string, unknown>, ctx: CapabilityConte
 
 async function runListTemplates(input: Record<string, unknown>, ctx: CapabilityContext): Promise<string> {
 	const orgId = requireString(input, 'orgId');
-	const response = await ctx.session.sdk?.listTemplates({ orgId });
+	const response = await requireSession(ctx).sdk?.listTemplates({ orgId });
 	const templates = response?.templates ?? [];
 	if (templates.length === 0) return 'No templates found for this organization.';
 	const capped = templates.slice(0, DEFAULT_TEMPLATE_LIMIT);
@@ -170,7 +170,7 @@ async function runListTemplates(input: Record<string, unknown>, ctx: CapabilityC
 async function runGetTemplate(input: Record<string, unknown>, ctx: CapabilityContext): Promise<string> {
 	requireString(input, 'orgId');
 	const templateId = requireString(input, 'templateId');
-	const template = await ctx.session.getTemplate(templateId);
+	const template = await requireSession(ctx).getTemplate(templateId);
 	return JSON.stringify(template, null, 2);
 }
 
@@ -180,7 +180,7 @@ async function runListWorkflows(input: Record<string, unknown>, ctx: CapabilityC
 	const limit = Math.min(asPositiveInt(input, 'limit') ?? DEFAULT_WORKFLOW_LIMIT, MAX_WORKFLOW_LIMIT);
 	const variables: Record<string, unknown> = { orgId, limit };
 	if (search) variables.search = { name: search };
-	const { data, errors } = await ctx.session.rawGraphql(VISIBLE_WORKFLOWS_QUERY, variables);
+	const { data, errors } = await requireSession(ctx).rawGraphql(VISIBLE_WORKFLOWS_QUERY, variables);
 	if (Array.isArray(errors) ? errors.length > 0 : errors != null) {
 		throw new Error(`GraphQL error: ${JSON.stringify(errors)}`);
 	}
@@ -201,7 +201,7 @@ async function runListWorkflows(input: Record<string, unknown>, ctx: CapabilityC
 async function runGetWorkflow(input: Record<string, unknown>, ctx: CapabilityContext): Promise<string> {
 	requireString(input, 'orgId');
 	const workflowId = requireString(input, 'workflowId');
-	const { data, errors } = await ctx.session.rawGraphql(WORKFLOW_QUERY, { id: workflowId });
+	const { data, errors } = await requireSession(ctx).rawGraphql(WORKFLOW_QUERY, { id: workflowId });
 	if (Array.isArray(errors) ? errors.length > 0 : errors != null) {
 		throw new Error(`GraphQL error: ${JSON.stringify(errors)}`);
 	}
@@ -220,8 +220,9 @@ async function runGraphqlQuery(input: Record<string, unknown>, ctx: CapabilityCo
 	) {
 		throw new Error('"variables" must be a JSON object when provided.');
 	}
+	const session = requireSession(ctx);
 	return runReadonlyGraphql(query, rawVariables as Record<string, unknown> | undefined, (q, v) =>
-		ctx.session.rawGraphql(q, v),
+		session.rawGraphql(q, v),
 	);
 }
 

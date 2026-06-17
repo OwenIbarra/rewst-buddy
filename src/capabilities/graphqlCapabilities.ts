@@ -1,6 +1,6 @@
 import { createGraphqlDeps, GRAPHQL_TOOL_SPECS, runGraphqlTool } from '../ui/chat/tools/graphqlTool';
 import type { ToolSpec } from '../ui/chat/tools/toolProtocol';
-import type { Capability } from './Capability';
+import { requireSession, type Capability } from './Capability';
 
 /**
  * Migrates the existing rewst_graphql_schema / rewst_graphql tool specs into
@@ -27,7 +27,8 @@ export const graphqlSchemaCapability: Capability = {
 	chat: true,
 	mcp: false,
 	enabled: settings => settings.enableGraphqlTool,
-	run: (input, ctx) => runGraphqlTool({ tool: 'rewst_graphql_schema', args: input }, createGraphqlDeps(ctx.session)),
+	run: (input, ctx) =>
+		runGraphqlTool({ tool: 'rewst_graphql_schema', args: input }, createGraphqlDeps(requireSession(ctx))),
 };
 
 export const graphqlCapability: Capability = {
@@ -36,7 +37,7 @@ export const graphqlCapability: Capability = {
 	chat: true,
 	mcp: false,
 	enabled: settings => settings.enableGraphqlTool,
-	run: (input, ctx) => runGraphqlTool({ tool: 'rewst_graphql', args: input }, createGraphqlDeps(ctx.session)),
+	run: (input, ctx) => runGraphqlTool({ tool: 'rewst_graphql', args: input }, createGraphqlDeps(requireSession(ctx))),
 };
 
 export const GRAPHQL_CAPABILITIES: Capability[] = [graphqlSchemaCapability, graphqlCapability];

@@ -12,7 +12,7 @@ import {
 const { suite, test } = Mocha;
 
 function settings(overrides: Partial<CapabilitySettings> = {}): CapabilitySettings {
-	return { enableGraphqlTool: false, ...overrides };
+	return { enableGraphqlTool: false, enableWorkspaceTools: false, enableWebTools: false, ...overrides };
 }
 
 suite('Unit: capability registry', () => {
@@ -42,21 +42,29 @@ suite('Unit: capability registry', () => {
 	});
 
 	suite('chat surface', () => {
-		test('graphql tools are exposed on the chat surface', () => {
+		test('exposes the workspace, web, and graphql tools', () => {
 			const names = chatCapabilities().map(capability => capability.spec.name);
-			assert.ok(names.includes('rewst_graphql_schema'));
-			assert.ok(names.includes('rewst_graphql'));
+			for (const expected of ['list_template_links', 'web_search', 'rewst_graphql_schema', 'rewst_graphql']) {
+				assert.ok(names.includes(expected), `${expected} exposed to chat`);
+			}
 		});
 
-		test('chat graphql capabilities are gated by enableGraphqlTool', () => {
-			for (const capability of chatCapabilities()) {
-				assert.strictEqual(capability.enabled(settings()), false, `${capability.spec.name} off by default`);
-				assert.strictEqual(
-					capability.enabled(settings({ enableGraphqlTool: true })),
-					true,
-					`${capability.spec.name} on when graphql enabled`,
-				);
-			}
+		test('each chat capability is gated by its own setting', () => {
+			const byName = new Map(chatCapabilities().map(capability => [capability.spec.name, capability]));
+			assert.strictEqual(
+				byName.get('list_template_links')?.enabled(settings({ enableWorkspaceTools: true })),
+				true,
+			);
+			assert.strictEqual(byName.get('list_template_links')?.enabled(settings()), false);
+			assert.strictEqual(byName.get('web_search')?.enabled(settings({ enableWebTools: true })), true);
+			assert.strictEqual(byName.get('rewst_graphql')?.enabled(settings({ enableGraphqlTool: true })), true);
+			assert.strictEqual(byName.get('rewst_graphql')?.enabled(settings()), false);
+		});
+
+		test('the MCP read tools are not exposed to the chat surface', () => {
+			const names = chatCapabilities().map(capability => capability.spec.name);
+			assert.ok(!names.includes('list_orgs'));
+			assert.ok(!names.includes('get_workflow'));
 		});
 	});
 
