@@ -149,3 +149,50 @@ A local HTTP server that receives session cookies from the [Rewst Buddy Browser 
 ```
 
 The server is enabled by default. Use `Start Server` / `Stop Server` commands for manual control.
+
+## MCP Server (External AI Clients)
+
+Exposes your authenticated Rewst sessions to external [Model Context Protocol](https://modelcontextprotocol.io) clients (Claude Desktop, Claude Code, Cursor) so an agent there can read — and, opt-in, change — Rewst through the same multi-org sessions the extension already manages. The clients inherit the extension's solved auth (encrypted cookies, region detection, refresh) instead of re-solving it.
+
+> **Off by default, and an escalation for an _unofficial_ extension.** Enabling this lets an autonomous agent in another app act against a real MSP org through your session. Read this section before turning it on.
+
+**How it works:**
+
+- A small, **credential-free bridge** (`node dist/mcp/rewst-mcp.js`) is what the MCP client spawns. It holds no cookies — it forwards tool calls over localhost HTTP to the running extension, which does the authenticated work.
+- The bridge finds the live extension by reading `~/.rewst-buddy/mcp.json` (written `0600` on activation with the port, a per-activation token, the pid, and version). The token rotates every activation.
+- Every MCP call is logged to the extension's output channel (tool, org, outcome), rate-limited, and large results are truncated — so you can see what the external agent did.
+
+**Setup:**
+
+1. Set `rewst-buddy.mcp.enable` to `true`.
+2. Run **Rewst Buddy: Generate MCP Client Config** — it opens and copies the client JSON pointing at the bundled bridge.
+3. Paste it into your MCP client's config and restart that client. (The client runs `node`, so Node.js must be on its PATH.)
+
+```json
+{
+	"mcpServers": {
+		"rewst-buddy": {
+			"command": "node",
+			"args": ["/path/to/extension/dist/mcp/rewst-mcp.js"]
+		}
+	}
+}
+```
+
+**Read tools** (available when enabled): `list_orgs`, `list_templates`, `get_template`, `list_workflows`, `get_workflow`, and `rewst_graphql_query` (read-only GraphQL; itself gated behind `rewst-buddy.ai.enableGraphqlTool`). Call `list_orgs` first to learn which `orgId` to pass.
+
+**Write tools** (`update_template_body`, `create_template`) are off unless `rewst-buddy.mcp.enableWriteTools` is also `true`, **and** each change still requires your per-resource approval inside VS Code — the agent gets an "approval required" result and a VS Code prompt appears; approving allows that resource for the session. The external client never approves writes.
+
+**Multiple VS Code windows:** only one window can own the localhost port; the bridge talks to whichever window owns it (and its sessions), which may differ from the window you're looking at.
+
+**Configuration:**
+
+```json
+{
+	"rewst-buddy.mcp.enable": true,
+	"rewst-buddy.mcp.enableWriteTools": false,
+	"rewst-buddy.mcp.enabledTools": []
+}
+```
+
+`enabledTools` is an allowlist of capability names; leave it empty to expose all enabled read tools, or set names (e.g. `["list_orgs", "list_templates"]`) to narrow the surface.

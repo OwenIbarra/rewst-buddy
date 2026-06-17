@@ -44,6 +44,7 @@ Want to pull in **every template** from an organization at once? See the [Bulk F
 - Smart template opening — reuses existing linked files instead of creating untitled docs
 - File rename support + automatic stale link cleanup
 - Browser extension integration (sideload — not yet on the Chrome Web Store)
+- MCP server — expose your Rewst sessions to external AI clients (Claude Desktop, Claude Code, Cursor) through a credential-free bridge; off by default, read-only unless you opt in ([details](docs/features.md#mcp-server-external-ai-clients))
 - Multi-region support
 
 Full detail → [docs/features.md](docs/features.md).
@@ -55,6 +56,7 @@ Rewst does not publish a public API, so this extension authenticates the same wa
 - Your cookie is stored only in VS Code's built-in [SecretStorage](https://code.visualstudio.com/api/references/vscode-api#SecretStorage) (OS-level encrypted storage).
 - No data is sent anywhere other than Rewst's own API.
 - Sessions inherit your current Rewst permissions — the extension can do nothing you can't already do in the browser.
+- The [MCP server](docs/features.md#mcp-server-external-ai-clients) is **off by default**. Enabling it lets an autonomous agent in an external client act against a real MSP org through your session — a meaningful escalation for an unofficial extension. It is read-only unless you separately opt into write tools, and every write still needs your approval inside VS Code. The bridge process holds no credentials.
 
 If you have security concerns, the codebase is MIT-licensed and open for audit — please [open an issue](https://github.com/totallynotjon/rewst-buddy/issues) with any findings.
 

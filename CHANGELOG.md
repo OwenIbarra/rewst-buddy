@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **MCP server — expose your Rewst sessions to external AI clients** - external [Model Context Protocol](https://modelcontextprotocol.io) clients (Claude Desktop, Claude Code, Cursor) can now operate against Rewst through the multi-org sessions the extension already manages. A bundled, **credential-free** stdio bridge (`dist/mcp/rewst-mcp.js`) is what the client spawns; it holds no cookies and forwards tool calls over localhost HTTP to the running extension, which does the authenticated work. The bridge discovers the live extension from `~/.rewst-buddy/mcp.json` (written `0600` with a per-activation token that rotates each activation). Read tools: `list_orgs`, `list_templates`, `get_template`, `list_workflows`, `get_workflow`, and a read-only `rewst_graphql_query`. Calls are audited to the output channel, rate-limited, and truncated. Off by default behind `rewst-buddy.mcp.enable`. New command **Generate MCP Client Config** writes the client JSON. See [docs/features.md](docs/features.md#mcp-server-external-ai-clients).
+- **Opt-in MCP write tools with in-VS-Code approval** - `update_template_body` and `create_template` are available only when `rewst-buddy.mcp.enableWriteTools` is on, and each change additionally requires your per-resource approval inside VS Code (the external client never approves writes). Unapproved writes return an "approval required" result and pop a VS Code prompt; approving allows that org + resource for the session, reusing the same approval store as the chat's GraphQL mutations.
+
+### Changed
+
+- **Capabilities registry is the single source of truth** - Rewst operations are now defined once in `src/capabilities` and surfaced on both the Cage-Free Rewsty chat tools and the MCP server, so each operation's spec, gating, and handler live in one place (no user-visible change to the chat tool set).
+
 ## [0.43.6] - 2026-06-16
 
 ### Added
