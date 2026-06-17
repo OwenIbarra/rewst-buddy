@@ -69,8 +69,8 @@ suite('Unit: capability registry', () => {
 	});
 
 	suite('mcp surface', () => {
-		test('read tools are exposed to MCP and are all read access', () => {
-			const names = mcpCapabilities().map(capability => capability.spec.name);
+		test('the read tools are exposed to MCP with read access', () => {
+			const byName = new Map(mcpCapabilities().map(capability => [capability.spec.name, capability]));
 			for (const expected of [
 				'list_orgs',
 				'list_templates',
@@ -79,10 +79,9 @@ suite('Unit: capability registry', () => {
 				'get_workflow',
 				'rewst_graphql_query',
 			]) {
-				assert.ok(names.includes(expected), `${expected} exposed to MCP`);
-			}
-			for (const capability of mcpCapabilities()) {
-				assert.strictEqual(capability.access, 'read', `${capability.spec.name} is read-only`);
+				const capability = byName.get(expected);
+				assert.ok(capability, `${expected} exposed to MCP`);
+				assert.strictEqual(capability.access, 'read', `${expected} is read-only`);
 			}
 		});
 
@@ -90,6 +89,17 @@ suite('Unit: capability registry', () => {
 			const names = mcpCapabilities().map(capability => capability.spec.name);
 			assert.ok(!names.includes('rewst_graphql'));
 			assert.ok(!names.includes('rewst_graphql_schema'));
+		});
+
+		test('write tools are MCP-only, access write, and declare an approval scope', () => {
+			for (const name of ['update_template_body', 'create_template']) {
+				const capability = getCapability(name);
+				assert.ok(capability, `${name} is registered`);
+				assert.strictEqual(capability.access, 'write');
+				assert.strictEqual(capability.mcp, true);
+				assert.strictEqual(capability.chat, false);
+				assert.strictEqual(typeof capability.approval, 'function', `${name} has an approval scope`);
+			}
 		});
 
 		test('list_orgs does not require an org', () => {

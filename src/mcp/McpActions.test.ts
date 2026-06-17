@@ -3,6 +3,8 @@ import * as Mocha from 'mocha';
 import vscode from 'vscode';
 import { SessionManager } from '@sessions';
 import { createMockSession, Fixtures, initTestEnvironment } from '@test';
+import { _resetApprovedMutationScopes, approveMutationScope } from '../ui/chat/tools/graphqlTool';
+import { _resetWriteApprovalPromptsForTesting } from './approval';
 import { McpError, _resetMcpThrottleForTesting, callTool, handleMcpRequest, listTools } from './McpActions';
 import { MCP_PROTOCOL_VERSION } from './protocol';
 import { rotateMcpToken } from './runtime';
@@ -32,6 +34,8 @@ suite('Unit: McpActions', () => {
 		initTestEnvironment();
 		SessionManager._resetForTesting();
 		_resetMcpThrottleForTesting();
+		_resetApprovedMutationScopes();
+		_resetWriteApprovalPromptsForTesting();
 	});
 
 	teardown(() => {
@@ -146,6 +150,75 @@ suite('Unit: McpActions', () => {
 				}
 			}
 			assert.ok(limited, 'the throttle eventually rejects a burst of calls');
+		});
+	});
+
+	suite('write tools', () => {
+		test('listTools hides write tools unless write tools are enabled', () => {
+			assert.ok(
+				!listTools(settings())
+					.map(t => t.name)
+					.includes('update_template_body'),
+			);
+			const enabled = listTools(settings({ enableWriteTools: true })).map(t => t.name);
+			assert.ok(enabled.includes('update_template_body'));
+			assert.ok(enabled.includes('create_template'));
+		});
+
+		test('a write call is rejected with write_disabled when writes are off', async () => {
+			useSession('org-1');
+			await assert.rejects(
+				callTool(
+					{
+						action: 'mcp.callTool',
+						name: 'update_template_body',
+						arguments: { orgId: 'org-1', templateId: 't-1', body: 'x' },
+					},
+					settings(),
+				),
+				(error: unknown) => error instanceof McpError && error.code === 'write_disabled',
+			);
+		});
+
+		test('an unapproved write returns approval_required and does not mutate', async () => {
+			const { wrapper } = useSession('org-1');
+			await assert.rejects(
+				callTool(
+					{
+						action: 'mcp.callTool',
+						name: 'update_template_body',
+						arguments: { orgId: 'org-1', templateId: 't-1', body: 'x' },
+					},
+					settings({ enableWriteTools: true }),
+				),
+				(error: unknown) => error instanceof McpError && error.code === 'approval_required',
+			);
+			assert.strictEqual(wrapper.getCallsFor('updateTemplateBody').length, 0, 'no mutation before approval');
+		});
+
+		test('an approved write runs the mutation', async () => {
+			const { wrapper } = useSession('org-1', 'Acme');
+			wrapper.when('updateTemplateBody', {
+				data: {
+					__typename: 'Mutation',
+					template: Fixtures.template({ id: 't-1', name: 'Welcome', updatedAt: '2026-06-17T00:00:00Z' }),
+				},
+			});
+			// Approve the org + resource scope (as the VS Code user would).
+			approveMutationScope({ scopeId: 't-1', scopeName: 'Welcome', orgId: 'org-1', orgName: 'Acme' });
+			const result = await okResult(
+				callTool(
+					{
+						action: 'mcp.callTool',
+						name: 'update_template_body',
+						arguments: { orgId: 'org-1', templateId: 't-1', body: 'new body' },
+					},
+					settings({ enableWriteTools: true }),
+				),
+			);
+			assert.ok(!result.isError);
+			assert.strictEqual(wrapper.getCallsFor('updateTemplateBody').length, 1);
+			assert.strictEqual(wrapper.getCallsFor('updateTemplateBody')[0].variables.body, 'new body');
 		});
 	});
 

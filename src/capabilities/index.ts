@@ -4,6 +4,7 @@ export {
 	type CapabilityAccess,
 	type CapabilityContext,
 	type CapabilitySettings,
+	type WriteApproval,
 } from './Capability';
 export {
 	CAPABILITY_REGISTRY,

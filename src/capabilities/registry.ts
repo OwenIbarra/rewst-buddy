@@ -2,6 +2,7 @@ import type { Capability, CapabilitySettings } from './Capability';
 import { GRAPHQL_CAPABILITIES } from './graphqlCapabilities';
 import { READ_CAPABILITIES } from './rewstReadCapabilities';
 import { WORKSPACE_CAPABILITIES } from './workspaceCapabilities';
+import { WRITE_CAPABILITIES } from './writeCapabilities';
 
 /**
  * The single source of truth for Rewst capabilities. Surfaces (chat, MCP) filter
@@ -12,6 +13,7 @@ export const CAPABILITY_REGISTRY: Capability[] = [
 	...WORKSPACE_CAPABILITIES,
 	...GRAPHQL_CAPABILITIES,
 	...READ_CAPABILITIES,
+	...WRITE_CAPABILITIES,
 ];
 
 const BY_NAME = new Map(CAPABILITY_REGISTRY.map(capability => [capability.spec.name, capability]));

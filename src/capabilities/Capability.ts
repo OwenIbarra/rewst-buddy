@@ -48,6 +48,25 @@ export function requireSession(ctx: CapabilityContext): Session {
 	return ctx.session;
 }
 
+/**
+ * Describes the single resource a write capability changes, so the MCP surface
+ * can require per-resource approval inside VS Code (never in the external
+ * client) before the change runs. Keyed by org + scopeId, like the chat's
+ * GraphQL mutation approvals.
+ */
+export interface WriteApproval {
+	/** Stable id of the resource being changed (e.g. a template id). */
+	scopeId: string;
+	/** Human-readable resource name, shown in the approval prompt. */
+	scopeName: string;
+	/** Org the change runs in. */
+	orgId: string;
+	/** Org name, shown in the approval prompt. */
+	orgName: string;
+	/** Verb phrase for the prompt, e.g. "update the body of template". */
+	action: string;
+}
+
 export interface Capability {
 	spec: ToolSpec;
 	/**
@@ -69,6 +88,11 @@ export interface Capability {
 	requiresOrg?: boolean;
 	/** Intrinsic feature gate; surface-specific gates are applied by the surface. */
 	enabled(settings: CapabilitySettings): boolean;
+	/**
+	 * For access:'write' capabilities: the resource the write touches, so the MCP
+	 * surface can require the VS Code user's per-resource approval before run.
+	 */
+	approval?(input: Record<string, unknown>, ctx: CapabilityContext): WriteApproval;
 	/** Runs the operation and returns text for the caller. */
 	run(input: Record<string, unknown>, ctx: CapabilityContext): Promise<string>;
 }

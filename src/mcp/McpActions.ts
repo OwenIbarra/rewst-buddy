@@ -22,6 +22,7 @@ import {
 	type McpToolDescriptor,
 	type McpToolResult,
 } from './protocol';
+import { isWriteApproved, requestWriteApproval } from './approval';
 import { readMcpSettings, type McpSettings } from './settings';
 import { isValidMcpToken } from './runtime';
 import { SlidingWindowThrottle } from './throttle';
@@ -184,6 +185,21 @@ export async function callTool(request: McpCallToolRequest, settings: McpSetting
 
 	const args = request.arguments ?? {};
 	const ctx = await resolveContext(capability, args, request.orgId);
+
+	// Writes additionally require the VS Code user's per-resource approval, which
+	// happens in VS Code — not in the external client. Until approved, surface a
+	// prompt and return an actionable approval_required result for the agent.
+	if (capability.access === 'write' && capability.approval) {
+		const approval = capability.approval(args, ctx);
+		if (!isWriteApproved(approval)) {
+			requestWriteApproval(approval);
+			throw new McpError(
+				'approval_required',
+				`Approval required: a Rewst Buddy user must approve "${approval.scopeName}" in org ${approval.orgName} inside VS Code, then retry.`,
+			);
+		}
+	}
+
 	try {
 		const text = await capability.run(args, ctx);
 		log.info(`MCP callTool ok: ${request.name} org=${ctx.orgId}`);
