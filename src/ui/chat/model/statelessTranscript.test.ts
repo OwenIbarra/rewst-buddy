@@ -97,4 +97,27 @@ suite('Unit: statelessTranscript', () => {
 			'non-terminal tool output is not capped by the tighter terminal limit',
 		);
 	});
+	suite('message length budget (#189)', () => {
+		test('drops the oldest entries to fit an explicit budget', () => {
+			const transcript = serializeVisibleChat(
+				[
+					message(User, [text('a'.repeat(3_000))]),
+					message(Assistant, [text('b'.repeat(3_000))]),
+					message(User, [text('c'.repeat(1_000))]),
+				],
+				2_000,
+			);
+
+			assert.ok(transcript.length < 4_000, `transcript was ${transcript.length} chars`);
+			assert.ok(transcript.includes('c'.repeat(1_000)), 'the latest turn is kept');
+			assert.ok(transcript.includes('earlier message(s) omitted'), 'the drop is disclosed');
+		});
+
+		test('truncates the newest entry when it alone overruns the budget', () => {
+			const transcript = serializeVisibleChat([message(User, [text('c'.repeat(20_000))])], 3_000);
+
+			assert.ok(transcript.length < 4_000, `transcript was ${transcript.length} chars`);
+			assert.ok(/truncated/.test(transcript), 'the cut is marked');
+		});
+	});
 });

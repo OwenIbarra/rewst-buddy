@@ -1,7 +1,13 @@
+import { truncateToBudget } from '@utils';
 import vscode from 'vscode';
 
 const MAX_ENTRY_CHARS = 8_000;
-const MAX_TOTAL_CHARS = 64_000;
+/**
+ * Default ceiling when the caller passes no budget. Kept under the backend's
+ * per-message cap; the provider passes a tighter, computed budget that accounts
+ * for the directive and tool manifest sharing the same message.
+ */
+const MAX_TOTAL_CHARS = 48_000;
 // Terminal-reading tools (VS Code agent mode's run_in_terminal, get_terminal_output,
 // etc.) can surface scrollback from an unrelated session in the same integrated
 // terminal. Cap and frame that output much tighter than other tool results so the
@@ -94,7 +100,12 @@ function serializePart(part: unknown, calls: ReadonlyMap<string, ToolCallInfo>):
 	return '';
 }
 
-export function serializeVisibleChat(messages: readonly RequestMessage[]): string {
+/**
+ * Serializes the visible chat for a stateless turn, within `maxTotalChars`.
+ * Oldest entries are dropped first; if the newest entry alone still overflows it
+ * is truncated, so the caller's overall message budget always holds (#189).
+ */
+export function serializeVisibleChat(messages: readonly RequestMessage[], maxTotalChars = MAX_TOTAL_CHARS): string {
 	const calls = collectCalls(messages);
 	const entries: string[] = [];
 
@@ -114,11 +125,16 @@ export function serializeVisibleChat(messages: readonly RequestMessage[]): strin
 
 	let dropped = 0;
 	let total = entries.reduce((sum, entry) => sum + entry.length, 0);
-	while (total > MAX_TOTAL_CHARS && entries.length > 1) {
+	while (total > maxTotalChars && entries.length > 1) {
 		const removed = entries.shift();
 		if (removed === undefined) break;
 		total -= removed.length;
 		dropped++;
+	}
+	// The newest entry is kept even when it alone exceeds the budget (dropping it
+	// would discard the actual request), so trim it to fit.
+	if (total > maxTotalChars && entries.length === 1) {
+		entries[0] = truncateToBudget(entries[0], maxTotalChars);
 	}
 
 	const omitted = dropped > 0 ? `\n(${dropped} earlier message(s) omitted)` : '';

@@ -6,6 +6,17 @@ export { getHash } from './getHash';
 export { isDescendant } from './isDescendant';
 export { log } from './log';
 export { makeUniqueUri } from './makeUniqueUri';
+export {
+	clampConversationMessage,
+	MAX_CONVERSATION_MESSAGE_CHARS,
+	MIN_TRANSCRIPT_CHARS,
+	perSectionBudget,
+	TOOL_INSTRUCTIONS_BUDGET_CHARS,
+	TOOL_RESULTS_BUDGET_CHARS,
+	transcriptBudget,
+	truncateToBudget,
+	TURN_MESSAGE_TARGET_CHARS,
+} from './messageBudget';
 export { openTemplateById } from './openTemplateById';
 export { parseArgsUri } from './parseArgsUri';
 export { parseCookieString } from './parseCookieString';

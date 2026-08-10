@@ -1,3 +1,4 @@
+import { perSectionBudget, TOOL_RESULTS_BUDGET_CHARS, truncateToBudget } from '@utils';
 import vscode from 'vscode';
 import { parseToolRequests, type ToolRequest, type ToolResult, type ToolSpec } from '../tools/toolProtocol';
 
@@ -63,12 +64,15 @@ export function partitionToolRequests(
  * {@link formatToolResultsMessage}; a failed result is labeled so the model
  * reads it as an error to recover from, not as tool data.
  */
-export function formatInProcessToolResults(results: readonly ToolResult[]): string {
+export function formatInProcessToolResults(results: readonly ToolResult[], budget = TOOL_RESULTS_BUDGET_CHARS): string {
 	const sections: string[] = ['Tool results:'];
+	const perResult = perSectionBudget(budget, results.length);
 	for (const result of results) {
 		const argsLabel = result.argsLabel ? ` ${result.argsLabel}` : '';
 		const status = result.ok ? '' : ' (error)';
-		sections.push(`### ${result.tool}${argsLabel}${status}\n\`\`\`\n${result.output}\n\`\`\``);
+		sections.push(
+			`### ${result.tool}${argsLabel}${status}\n\`\`\`\n${truncateToBudget(result.output, perResult)}\n\`\`\``,
+		);
 	}
 	sections.push('Reply with more vscode-tool blocks if you need anything else, or give your final answer.');
 	return sections.join('\n\n');
@@ -140,14 +144,16 @@ function partText(part: unknown): string {
 export function formatToolResultsMessage(
 	results: readonly ToolResultPartLike[],
 	calls: ReadonlyMap<string, ToolCallInfo>,
+	budget = TOOL_RESULTS_BUDGET_CHARS,
 ): string {
 	const sections: string[] = ['Tool results:'];
+	const perResult = perSectionBudget(budget, results.length);
 	for (const result of results) {
 		const call = calls.get(result.callId);
 		const name = call?.name ?? 'tool';
 		const argsLabel = call?.input === undefined ? '' : ` ${JSON.stringify(call.input)}`;
 		const output = result.content.map(partText).filter(Boolean).join('\n');
-		sections.push(`### ${name}${argsLabel}\n\`\`\`\n${output}\n\`\`\``);
+		sections.push(`### ${name}${argsLabel}\n\`\`\`\n${truncateToBudget(output, perResult)}\n\`\`\``);
 	}
 	sections.push('Reply with more vscode-tool blocks if you need anything else, or give your final answer.');
 	return sections.join('\n\n');

@@ -2,12 +2,13 @@ import * as assert from 'assert';
 import * as Mocha from 'mocha';
 import vscode from 'vscode';
 import {
-    chatToolSpecs,
-    collectToolCalls,
-    extractTrailingToolResults,
-    formatInProcessToolResults,
-    partitionToolRequests,
-    rejectedToolsNote,
+	chatToolSpecs,
+	collectToolCalls,
+	extractTrailingToolResults,
+	formatInProcessToolResults,
+	formatToolResultsMessage,
+	partitionToolRequests,
+	rejectedToolsNote,
 } from './toolTranslation';
 
 const { suite, test } = Mocha;
@@ -95,12 +96,48 @@ suite('Unit: toolTranslation', () => {
 			assert.ok(message.includes('give your final answer'));
 		});
 
+		test('caps a huge output so the results message fits the backend limit (#189)', () => {
+			const message = formatInProcessToolResults(
+				[{ tool: 'buddy_execution_logs', argsLabel: '', ok: true, output: 'x'.repeat(200_000) }],
+				5_000,
+			);
+			assert.ok(message.length < 6_000, `results message was ${message.length} chars`);
+			assert.ok(/truncated/.test(message), 'the cut is marked for the model');
+		});
+
+		test('splits the output budget across several results', () => {
+			const results = Array.from({ length: 4 }, (_, i) => ({
+				tool: `buddy_tool_${i}`,
+				argsLabel: '',
+				ok: true,
+				output: 'y'.repeat(50_000),
+			}));
+			const message = formatInProcessToolResults(results, 8_000);
+			assert.ok(message.length < 10_000, `results message was ${message.length} chars`);
+			for (let i = 0; i < results.length; i++) {
+				assert.ok(message.includes(`buddy_tool_${i}`), `result ${i} is still reported`);
+			}
+		});
+
 		test('marks a failed result so the model does not treat the error text as data', () => {
 			const message = formatInProcessToolResults([
 				{ tool: 'buddy_workflow_get', argsLabel: '', ok: false, output: 'org_required' },
 			]);
 			assert.ok(/error/i.test(message));
 			assert.ok(message.includes('org_required'));
+		});
+	});
+
+	suite('formatToolResultsMessage()', () => {
+		test('caps a huge editor tool output so the message fits the backend limit (#189)', () => {
+			const message = formatToolResultsMessage(
+				[{ callId: 'call-1', content: [new vscode.LanguageModelTextPart('z'.repeat(200_000))] }],
+				new Map([['call-1', { name: 'read_file', input: { path: 'big.log' } }]]),
+				5_000,
+			);
+			assert.ok(message.length < 6_000, `results message was ${message.length} chars`);
+			assert.ok(message.includes('read_file'), 'the tool is still labeled');
+			assert.ok(/truncated/.test(message), 'the cut is marked for the model');
 		});
 	});
 

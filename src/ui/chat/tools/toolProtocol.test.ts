@@ -153,6 +153,30 @@ suite('Unit: toolProtocol', () => {
 			assert.ok(text.includes('list_files'));
 		});
 
+		test('keeps the manifest within a budget by cataloging the overflow (#189)', () => {
+			const specs = Array.from({ length: 60 }, (_, i) => ({
+				name: `buddy_tool_${i}`,
+				args: JSON.stringify({ type: 'object', properties: { a: { type: 'string' } } }),
+				description: `Does thing ${i}. ${'Long steering prose. '.repeat(30)}`,
+			}));
+			const budget = 12_000;
+			const text = buildToolInstructions(specs, { budget });
+
+			assert.ok(text.length <= budget + 3_000, `instructions were ${text.length} chars`);
+			assert.ok(text.includes('Tool catalog (summary only):'), 'a catalog section is present');
+			assert.ok(text.includes('buddy_tool_details'), 'the expansion tool is named');
+			for (const spec of specs) assert.ok(text.includes(spec.name), `${spec.name} is discoverable`);
+		});
+
+		test('lists every tool in full when the manifest fits the budget', () => {
+			const text = buildToolInstructions(
+				[{ name: 'read_file', args: '{"path": string}', description: 'Read a file.' }],
+				{ budget: 10_000 },
+			);
+			assert.ok(text.includes('read_file — args: {"path": string}'));
+			assert.ok(!text.includes('Tool catalog (summary only):'), 'no catalog section is needed');
+		});
+
 		test('does not add special GraphQL guidance for Rewst-looking tool names', () => {
 			const text = buildToolInstructions([
 				{ name: 'buddy_graphql_schema', args: '{}', description: 'Inspect schema.' },

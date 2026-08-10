@@ -2,7 +2,9 @@ import * as assert from 'assert';
 import * as Mocha from 'mocha';
 import { askRewstAi, Session } from '@sessions';
 import { clearCachedSession, getTestSession, hasTestToken, initTestEnvironment } from '@test';
+import { MAX_CONVERSATION_MESSAGE_CHARS, TOOL_INSTRUCTIONS_BUDGET_CHARS } from '@utils';
 import { buildEngineeringDirective } from '../../ui/chat/model/engineeringDirective';
+import { TOOL_DETAILS_TOOL_NAME } from '../../ui/chat/tools/toolCatalog';
 import {
 	buildToolInstructions,
 	parseToolRequests,
@@ -214,6 +216,61 @@ suite('Integration: engineering directive steering', function () {
 		assert.ok(
 			searchedDocs(statuses) || /noop/i.test(content),
 			`expected an explicit docs request to search or answer about noops, got statuses: ${statuses.join(', ') || '(none)'}`,
+		);
+	});
+	/**
+	 * The tool manifest is budgeted (#189): the full description + args schema of
+	 * every advertised tool is larger than one backend message may be, so most
+	 * tools reach the assistant as catalog summaries and are expanded on demand
+	 * with buddy_tool_details. This verifies the assistant actually navigates that
+	 * catalog instead of guessing a summarized tool's args.
+	 */
+	test('a summarized catalog tool is expanded with buddy_tool_details before use', async function () {
+		if (!hasTestToken()) {
+			this.skip();
+			return;
+		}
+		// Enough fat specs that the budget forces cataloging, with the target tool
+		// late in the list so it lands in the catalog rather than the detail section.
+		const specs: ToolSpec[] = Array.from({ length: 40 }, (_, i) => ({
+			name: `buddy_probe_${i}`,
+			description: `Probe ${i} of the Rewst tenant. ${'Extended steering prose for budget pressure. '.repeat(20)}`,
+			args: JSON.stringify({
+				type: 'object',
+				properties: { orgId: { type: 'string' }, probeId: { type: 'string' } },
+				required: ['orgId', 'probeId'],
+			}),
+		}));
+		const target = specs[specs.length - 1].name;
+
+		const directive = buildEngineeringDirective(new Set(specs.map(spec => spec.name)));
+		const question = `Use the ${target} tool to probe this tenant. Follow the local tool protocol exactly.`;
+		const message = `${directive}\n\n${question}\n\n${buildToolInstructions(specs, { budget: TOOL_INSTRUCTIONS_BUDGET_CHARS })}`;
+
+		assert.ok(
+			message.length <= MAX_CONVERSATION_MESSAGE_CHARS,
+			`assembled message was ${message.length} chars, over the backend limit`,
+		);
+
+		let content = '';
+		for await (const event of askRewstAi({
+			session,
+			orgId: session.profile.org.id,
+			message,
+			inactivityTimeoutMs: 150_000,
+		})) {
+			if (event.kind === 'complete') content = event.content;
+			if (event.kind === 'error') throw new Error(event.message);
+		}
+		const requests = parseToolRequests(content);
+		console.log(`\n===== Catalog navigation reply =====\n${content}\n===================================\n`);
+
+		assert.ok(requests.length > 0, `expected a tool request, got: ${content}`);
+		assert.ok(
+			requests.some(request => request.tool === TOOL_DETAILS_TOOL_NAME || request.tool === target),
+			`expected ${TOOL_DETAILS_TOOL_NAME} (or the target tool) to be requested, got: ${requests
+				.map(request => request.tool)
+				.join(', ')}`,
 		);
 	});
 });

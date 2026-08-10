@@ -10,6 +10,15 @@
  * turn of the same conversation.
  */
 
+import {
+	planToolManifest,
+	renderToolCatalogEntry,
+	renderToolDetailEntry,
+	renderToolNameEntry,
+	TOOL_DETAILS_SPEC,
+	TOOL_DETAILS_TOOL_NAME,
+} from './toolCatalog';
+
 export interface ToolSpec {
 	name: string;
 	/** What the tool does, shown to the assistant. */
@@ -63,10 +72,39 @@ export const MAX_REQUESTS_PER_TURN = 5;
 /**
  * Instructions appended to the first message of a request so the assistant
  * knows the tools exist and how to call them.
+ *
+ * `budget` caps the manifest's characters: the full description + args schema of
+ * every advertised tool runs well past the backend's per-message limit, so tools
+ * beyond the budget are listed as catalog summaries the assistant expands with
+ * `buddy_tool_details` (toolCatalog.ts). Omit `budget` for the unbudgeted full
+ * listing.
  */
-export function buildToolInstructions(specs: ToolSpec[]): string {
-	const lines = specs.map(spec => `- ${spec.name} — args: ${spec.args}. ${spec.description}`);
-	const exampleTool = specs[0]?.name ?? 'read_file';
+export function buildToolInstructions(specs: ToolSpec[], options: { budget?: number } = {}): string {
+	// The details tool is only worth advertising when something is actually
+	// summarized, so it is planned alongside the rest and dropped again when the
+	// whole manifest fit in full.
+	const plan =
+		options.budget === undefined
+			? { detailed: specs, cataloged: [] as ToolSpec[], named: [] as ToolSpec[] }
+			: planToolManifest([TOOL_DETAILS_SPEC, ...specs], options.budget);
+	const { cataloged, named } = plan;
+	const abbreviated = cataloged.length + named.length > 0;
+	const detailed = abbreviated ? plan.detailed : plan.detailed.filter(spec => spec.name !== TOOL_DETAILS_TOOL_NAME);
+	const lines = detailed.map(renderToolDetailEntry);
+	const catalogSection = abbreviated
+		? [
+				'',
+				`The tools below are listed without their args schema. Before calling one, request \`${TOOL_DETAILS_TOOL_NAME}\` with its name to get its full description and exact args, then call it in a following reply. Never guess these tools' args.`,
+				...(cataloged.length > 0
+					? ['', 'Tool catalog (summary only):', ...cataloged.map(renderToolCatalogEntry)]
+					: []),
+				...(named.length > 0 ? ['', 'Also available (name only):', ...named.map(renderToolNameEntry)] : []),
+			]
+		: [];
+	// A concrete tool with real arguments; the details tool called with no args
+	// would demonstrate a call that does nothing.
+	const example = detailed.find(spec => spec.name !== TOOL_DETAILS_TOOL_NAME) ?? specs[0];
+	const exampleTool = example?.name ?? 'read_file';
 	return [
 		'---',
 		"You can use local tools supplied by the user's VS Code extension. These editor tools are NOT in your platform function-calling registry — invoking them as native tool calls will fail with an unknown-tool error. The ONLY way to call one is to write a fenced code block tagged vscode-tool in your reply text:",
@@ -80,6 +118,7 @@ export function buildToolInstructions(specs: ToolSpec[]): string {
 		'',
 		'Available tools:',
 		...lines,
+		...catalogSection,
 		'',
 		`Rules: when you need tool information, reply with ONLY vscode-tool blocks (up to ${MAX_REQUESTS_PER_TURN} per reply) and no other prose; the editor runs them and sends the results back to you. After receiving results you may request more tools or give your final answer. Tackle multi-step work one step per reply: for a multi-step request, give the plan first (a tool-free reply, or a todo-list tool call if one is available), then take one step (one short lead-in sentence plus its block) per following reply; a single lookup is one step, so answer it tool-first. Never guess at file contents or workspace structure when a tool can check it.`,
 	].join('\n');

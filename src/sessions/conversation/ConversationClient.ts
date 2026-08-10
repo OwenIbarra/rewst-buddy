@@ -1,4 +1,4 @@
-import { log } from '@utils';
+import { clampConversationMessage, log } from '@utils';
 import { createClient } from 'graphql-ws';
 import vscode from 'vscode';
 import WebSocket from 'ws';
@@ -170,8 +170,16 @@ export async function* askRewstAi(options: AskOptions): AsyncGenerator<Conversat
 	};
 	const cancelListener = options.cancellation?.onCancellationRequested(dispose);
 
+	// The backend rejects an over-long message outright, failing the whole turn.
+	// Callers budget their own pieces (utils/messageBudget.ts); this is the wire's
+	// last-defense clamp so no path can trip that error (#189).
+	const clamped = clampConversationMessage(options.message);
+	if (clamped.trimmed > 0) {
+		log.info(`askRewstAi: message clamped to the backend limit (dropped ${clamped.trimmed} chars)`);
+	}
+
 	const variables = {
-		message: options.message,
+		message: clamped.message,
 		orgId,
 		conversationId: options.conversationId ?? null,
 		conversationType: options.conversationType ?? 'HELP_DOCS',

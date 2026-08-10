@@ -7,10 +7,11 @@ import {
 	type ConversationSource,
 	type Session,
 } from '@sessions';
-import { log } from '@utils';
+import { log, TOOL_INSTRUCTIONS_BUDGET_CHARS, transcriptBudget, truncateToBudget } from '@utils';
 import vscode from 'vscode';
 import { prependInstructions } from '../promptContext';
 import { ChunkGate } from '../tools/chunkGate';
+import { buildToolRefresher, mcpToolTail, renderToolDetails, TOOL_DETAILS_TOOL_NAME } from '../tools/toolCatalog';
 import { buildToolInstructions, stripToolRequestBlocks, type ToolResult, type ToolSpec } from '../tools/toolProtocol';
 import { formatBreadcrumb, parseLatestBreadcrumb } from './breadcrumb';
 import { buddyChatToolSpecs, runBuddyChatTool, type BuddyToolResult } from './buddyChatTools';
@@ -66,6 +67,17 @@ export interface ProviderDeps {
 export function normalizeBuddyToolRounds(value: unknown): number {
 	if (typeof value !== 'number' || !Number.isFinite(value)) return MAX_BUDDY_TOOL_ROUNDS;
 	return Math.max(1, Math.min(100, Math.floor(value)));
+}
+
+/** How many conversations' manifest state to remember (one per live chat, plus slack). */
+const MAX_TRACKED_MANIFESTS = 64;
+
+/** Identity of a tool manifest: the exact set of tool names it advertises. */
+function manifestFingerprint(specs: readonly ToolSpec[]): string {
+	return specs
+		.map(spec => spec.name)
+		.sort()
+		.join('|');
 }
 
 /** Caps a buddy tool's args line in the activity card so a big arg blob can't flood the chat. */
@@ -238,6 +250,14 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 	private directiveCache = new Map<string, string>();
 	private nativeReminderCache = new Map<string, string>();
 	private toolInstructionsCache = new Map<string, string>();
+	private toolRefresherCache = new Map<string, string>();
+
+	// Which backend conversation has already received the full tool manifest, and
+	// for which tool set. A warm conversation keeps everything it was sent, so a
+	// follow-up turn only needs the compact refresher — re-sending the manifest
+	// costs thousands of characters per turn for text the backend already read.
+	// Bounded: a chat is one entry, and stale ids only waste a re-send.
+	private manifestFingerprints = new Map<string, string>();
 
 	constructor(private readonly deps: ProviderDeps = defaultProviderDeps) {}
 
@@ -275,10 +295,38 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 			.join('|');
 		let value = this.toolInstructionsCache.get(key);
 		if (value === undefined) {
-			value = buildToolInstructions([...specs]);
+			// Budgeted: the full manifest of every advertised tool is far larger than
+			// one backend message may be, so tools past the budget are advertised as
+			// catalog summaries the model expands with buddy_tool_details.
+			value = buildToolInstructions([...specs], { budget: TOOL_INSTRUCTIONS_BUDGET_CHARS });
 			this.toolInstructionsCache.set(key, value);
 		}
 		return value;
+	}
+
+	private cachedToolRefresher(specs: readonly ToolSpec[]): string {
+		const key = manifestFingerprint(specs);
+		let value = this.toolRefresherCache.get(key);
+		if (value === undefined) {
+			value = buildToolRefresher(specs, TOOL_INSTRUCTIONS_BUDGET_CHARS);
+			this.toolRefresherCache.set(key, value);
+		}
+		return value;
+	}
+
+	/** True when this conversation already holds the manifest for exactly this tool set. */
+	private hasManifest(conversationId: string | undefined, fingerprint: string): boolean {
+		return conversationId !== undefined && this.manifestFingerprints.get(conversationId) === fingerprint;
+	}
+
+	private noteManifestSent(conversationId: string, fingerprint: string): void {
+		this.manifestFingerprints.delete(conversationId);
+		this.manifestFingerprints.set(conversationId, fingerprint);
+		while (this.manifestFingerprints.size > MAX_TRACKED_MANIFESTS) {
+			const oldest = this.manifestFingerprints.keys().next().value;
+			if (oldest === undefined) break;
+			this.manifestFingerprints.delete(oldest);
+		}
 	}
 
 	dispose(): void {
@@ -338,6 +386,10 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 		const allBuddySpecs = this.deps.buddyToolSpecs();
 		const buddySpecs = allBuddySpecs.filter(spec => !vscodeNames.has(spec.name));
 		const buddyNames = new Set(buddySpecs.map(spec => spec.name));
+		// The catalog's expansion tool. Handled by this provider (not the capability
+		// registry) so it can describe VS Code editor tools too; it rides the buddy
+		// path so a request for it runs in-process like any other Buddy tool.
+		buddyNames.add(TOOL_DETAILS_TOOL_NAME);
 		// Redirecting a server-side Rewst tool to the local path keys off ALL
 		// advertised Buddy tools, not just the in-process subset: when VS Code has
 		// already supplied every Buddy tool natively, buddySpecs is empty yet the
@@ -347,7 +399,19 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 		// when a native call to one of these is intercepted and redirected.
 		const editorToolNames = new Set(EDITOR_ONLY_REMINDER_TOOLS.filter(t => vscodeNames.has(t)));
 		const permittedNames = new Set<string>([...vscodeNames, ...buddyNames]);
-		const advertisedSpecs = [...chatToolSpecs(tools), ...buddySpecs];
+		// Editor tools first: the budgeted manifest keeps the earliest specs in full
+		// detail, and those are the ones used on nearly every turn. A Buddy tool VS
+		// Code handed back under its MCP name (`mcp_<server>_buddy_x`, when the user
+		// also configured our /mcp bridge as a chat MCP server) is the same operation
+		// as the in-process spec, so it is advertised once — on the in-process path,
+		// which keeps the working-scope and approval gates. The prefixed name stays in
+		// vscodeNames, so a model that asks for it anyway still gets routed.
+		const inProcessBuddyNames = new Set(allBuddySpecs.map(spec => spec.name));
+		const editorSpecs = chatToolSpecs(tools).filter(spec => {
+			const tail = mcpToolTail(spec.name);
+			return tail === undefined || !inProcessBuddyNames.has(tail);
+		});
+		const advertisedSpecs = [...editorSpecs, ...buddySpecs];
 		const { customInstructions, conversationType, showActivity, maxBuddyToolRounds } = this.deps.aiConfig();
 
 		const trailingResults = extractTrailingToolResults(messages);
@@ -424,9 +488,13 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 		// Outer loop: a reuse turn that the backend can't follow downgrades to
 		// a fresh, stateless turn ONCE. The first attempt reuses when recovery
 		// found a conversation; the retry always starts fresh.
+		const manifestKey = manifestFingerprint(advertisedSpecs);
 		for (;;) {
 			const reusing = conversationId !== undefined;
 			const reusedId = conversationId;
+			// A reuse turn whose conversation already holds this exact manifest gets
+			// the compact refresher instead; anything else re-sends it in full.
+			const refreshOnly = reusing && this.hasManifest(conversationId, manifestKey);
 			let message = await this.buildTurnMessage(
 				session,
 				!reusing,
@@ -436,7 +504,11 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 				customInstructions,
 				permittedNames,
 				advertisedSpecs,
+				refreshOnly,
 			);
+			// Tool-result turns carry neither manifest nor refresher, and their
+			// conversation already holds one, so they leave the record untouched.
+			const carriedFullManifest = !refreshOnly && !(reusing && trailingResults !== undefined);
 			let downgrade = false;
 			// In-process buddy tool rounds taken within this chat response.
 			let buddyRounds = 0;
@@ -508,6 +580,7 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 							break;
 						case 'conversation':
 							conversationId = event.conversationId;
+							if (carriedFullManifest) this.noteManifestSent(conversationId, manifestKey);
 							break;
 						case 'chunk':
 							emitText(gate.push(event.text));
@@ -517,6 +590,8 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 							completeContent = event.content;
 							sources = event.sources;
 							conversationId = event.conversationId ?? conversationId;
+							if (carriedFullManifest && conversationId)
+								this.noteManifestSent(conversationId, manifestKey);
 							break;
 						case 'approval':
 							emitText(
@@ -602,6 +677,18 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 							},
 							gate,
 						);
+						// The catalog lookup is answered locally from this turn's advertised
+						// specs — it touches no Rewst data, so it is not a buddy-tool run
+						// and must not block the stateless downgrade path.
+						if (request.tool === TOOL_DETAILS_TOOL_NAME) {
+							results.push({
+								tool: request.tool,
+								argsLabel,
+								ok: true,
+								output: renderToolDetails(advertisedSpecs, request.args),
+							});
+							continue;
+						}
 						const result = await this.deps.runBuddyTool(request.tool, request.args, orgId);
 						ranBuddyTool = true;
 						results.push({
@@ -637,6 +724,7 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 			if (!downgrade) return;
 			if (reusedId) {
 				conversationMap.forget(reusedId);
+				this.manifestFingerprints.delete(reusedId);
 				fireDelete(reusedId);
 			}
 			conversationId = undefined;
@@ -695,30 +783,44 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 		customInstructions: string,
 		permittedNames: ReadonlySet<string>,
 		specs: readonly ToolSpec[],
+		refreshOnly: boolean,
 	): Promise<string> {
 		if (stateless) return this.buildStatelessMessage(session, messages, customInstructions, permittedNames, specs);
 		if (trailingResults) return formatToolResultsMessage(trailingResults, toolCalls ?? new Map());
-		return this.buildReuseMessage(messages, customInstructions, permittedNames, specs);
+		return this.buildReuseMessage(messages, customInstructions, permittedNames, specs, refreshOnly);
 	}
 
 	/**
 	 * Lean message for reusing a warm conversation: only the new user turn (plus
-	 * cheap workspace context and tool instructions). The conversation already
-	 * holds the transcript and the engineering directive, so neither is re-sent —
-	 * this is the speed win over the stateless path.
+	 * cheap workspace context and tool steering). The conversation already holds
+	 * the transcript and the engineering directive, so neither is re-sent — this is
+	 * the speed win over the stateless path. `refreshOnly` narrows the tool steering
+	 * to the compact refresher when the conversation already holds this exact
+	 * manifest, which is the common case for every turn after the first.
 	 */
 	private async buildReuseMessage(
 		messages: readonly vscode.LanguageModelChatRequestMessage[],
 		customInstructions: string,
 		permittedNames: ReadonlySet<string>,
 		specs: readonly ToolSpec[],
+		refreshOnly: boolean,
 	): Promise<string> {
-		let message = prependInstructions(this.trailingText(messages), customInstructions);
+		const rootLine = this.workspaceRootLine();
+		const toolSteering = refreshOnly ? this.cachedToolRefresher(specs) : this.cachedToolInstructions(specs);
+		const instructions = specs.length > 0 && toolSteering ? `\n\n${toolSteering}` : '';
+		const reminder = `\n\n${this.cachedNativeToolReminder(permittedNames)}`;
+		// A pasted file or a huge selection can make the user's own turn overrun the
+		// message limit on its own; trim it against what the fixed parts leave.
+		const userTurn = truncateToBudget(
+			prependInstructions(this.trailingText(messages), customInstructions),
+			transcriptBudget(rootLine.length + instructions.length + reminder.length),
+		);
+		return `${userTurn}${rootLine}${instructions}${reminder}`;
+	}
+
+	private workspaceRootLine(): string {
 		const root = this.deps.workspaceRoot();
-		if (root) message += `\n\nThe user's VS Code working directory: ${root}`;
-		if (specs.length > 0) message += `\n\n${this.cachedToolInstructions(specs)}`;
-		message += `\n\n${this.cachedNativeToolReminder(permittedNames)}`;
-		return message;
+		return root ? `\n\nThe user's VS Code working directory: ${root}` : '';
 	}
 
 	/** Concatenated text of the trailing (user) message. */
@@ -739,16 +841,31 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 		permittedNames: ReadonlySet<string>,
 		specs: readonly ToolSpec[],
 	): Promise<string> {
-		let message = prependInstructions(serializeVisibleChat(messages), customInstructions);
+		const directive = this.cachedEngineeringDirective(permittedNames);
+		const reminder = this.cachedNativeToolReminder(permittedNames);
+		const instructions = specs.length > 0 ? `\n\n${this.cachedToolInstructions(specs)}` : '';
 		const metadata = rewstUserEmailMetadata(session);
+		const rootLine = this.workspaceRootLine();
+		// The transcript is the one elastic part of this message: everything else
+		// (directive, tool manifest, standing instructions, metadata) has to be sent
+		// whole, so the transcript gets whatever the budget leaves (#189).
+		const fixedChars =
+			directive.length +
+			reminder.length +
+			instructions.length +
+			metadata.length +
+			rootLine.length +
+			customInstructions.length;
+		let message = prependInstructions(
+			serializeVisibleChat(messages, transcriptBudget(fixedChars)),
+			customInstructions,
+		);
 		if (metadata) message = `${metadata}\n\n${message}`;
-		const root = this.deps.workspaceRoot();
-		if (root) message += `\n\nThe user's VS Code working directory: ${root}`;
-		if (specs.length > 0) message += `\n\n${this.cachedToolInstructions(specs)}`;
-		message = [this.cachedEngineeringDirective(permittedNames), message].filter(Boolean).join('\n\n');
+		message += rootLine + instructions;
+		message = [directive, message].filter(Boolean).join('\n\n');
 		// Highest-recency line: the directive sits far above the latest user turn
 		// (buried in the transcript), so repeat the native-tool curb last.
-		message += `\n\n${this.cachedNativeToolReminder(permittedNames)}`;
+		message += `\n\n${reminder}`;
 		return message;
 	}
 }
