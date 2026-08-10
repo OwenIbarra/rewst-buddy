@@ -57,13 +57,17 @@ export function transcriptBudget(fixedChars: number, target = TURN_MESSAGE_TARGE
 }
 
 /**
- * Splits a total budget evenly across `count` sections, with a sane floor. The
- * floor never lifts a section above `total` — the budget stays a hard bound even
- * when there are more sections than the floor can serve.
+ * Strictly partitions a budget across `count` sections: `count` times the
+ * returned allowance never exceeds `total`, so a caller that gives every section
+ * its allowance stays within budget however many sections there are.
+ *
+ * There is deliberately no minimum allowance. A floor large enough to be useful
+ * is a floor that overspends once the sections outnumber it, and a section can
+ * always be reported with a truncation marker instead of being dropped.
  */
-export function perSectionBudget(total: number, count: number, minimum = 500): number {
+export function perSectionBudget(total: number, count: number): number {
 	if (count <= 0) return total;
-	return Math.min(total, Math.max(minimum, Math.floor(total / count)));
+	return Math.max(0, Math.floor(total / count));
 }
 
 /**

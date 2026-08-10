@@ -123,6 +123,24 @@ suite('Unit: toolTranslation', () => {
 			}
 		});
 
+		test('stays within budget with more results than the budget can generously serve', () => {
+			// Regression: an even split below the old per-section floor handed every
+			// result the floor instead, so twelve results overran the whole budget.
+			const budget = 6_000;
+			const results = Array.from({ length: 12 }, (_, i) => ({
+				tool: `buddy_tool_${i}`,
+				argsLabel: '',
+				ok: true,
+				output: 'y'.repeat(5_000),
+			}));
+			const message = formatInProcessToolResults(results, budget);
+
+			assert.ok(message.length <= budget, `results message was ${message.length} chars, budget ${budget}`);
+			for (let i = 0; i < results.length; i++) {
+				assert.ok(message.includes(`buddy_tool_${i}`), `result ${i} is still reported`);
+			}
+		});
+
 		test('stays within budget when the args labels are themselves huge', () => {
 			const budget = 4_000;
 			const results = Array.from({ length: 3 }, (_, i) => ({
@@ -154,6 +172,23 @@ suite('Unit: toolTranslation', () => {
 			assert.ok(message.length <= 5_000, `results message was ${message.length} chars`);
 			assert.ok(message.includes('read_file'), 'the tool is still labeled');
 			assert.ok(/truncated/.test(message), 'the cut is marked for the model');
+		});
+
+		test('stays within budget with many replayed editor tool results', () => {
+			const budget = 6_000;
+			const results = Array.from({ length: 12 }, (_, i) => ({
+				callId: `call-${i}`,
+				content: [new vscode.LanguageModelTextPart('z'.repeat(5_000))],
+			}));
+			const calls = new Map(
+				results.map((result, i) => [result.callId, { name: `editor_tool_${i}`, input: { path: `f${i}.txt` } }]),
+			);
+			const message = formatToolResultsMessage(results, calls, budget);
+
+			assert.ok(message.length <= budget, `results message was ${message.length} chars, budget ${budget}`);
+			for (let i = 0; i < results.length; i++) {
+				assert.ok(message.includes(`editor_tool_${i}`), `result ${i} is still reported`);
+			}
 		});
 
 		test('stays within budget when the echoed call input is huge', () => {

@@ -43,17 +43,26 @@ suite('Unit: messageBudget', () => {
 
 	suite('perSectionBudget()', () => {
 		test('splits the total evenly', () => {
-			assert.strictEqual(perSectionBudget(1_000, 4, 100), 250);
+			assert.strictEqual(perSectionBudget(1_000, 4), 250);
+			assert.strictEqual(perSectionBudget(200, 1), 200);
 		});
 
-		test('honors the floor for many sections', () => {
-			assert.strictEqual(perSectionBudget(4_000, 4, 500), 1_000);
+		test('partitions strictly: every section together never exceeds the total', () => {
+			for (const [total, count] of [
+				[1_000, 100],
+				[5_460, 12],
+				[100, 7],
+				[3, 5],
+				[24_000, 5],
+			] as const) {
+				const share = perSectionBudget(total, count);
+				assert.ok(share * count <= total, `${count} sections of ${share} exceed the total of ${total}`);
+			}
 		});
 
-		test('never hands a section more than the total budget', () => {
-			// The floor must not lift a section above the budget it is drawn from.
-			assert.strictEqual(perSectionBudget(1_000, 100, 5_000), 1_000);
-			assert.strictEqual(perSectionBudget(200, 1, 500), 200);
+		test('gives nothing rather than overspending when the total cannot cover the sections', () => {
+			assert.strictEqual(perSectionBudget(3, 5), 0);
+			assert.strictEqual(perSectionBudget(0, 4), 0);
 		});
 
 		test('returns the total when there are no sections', () => {
