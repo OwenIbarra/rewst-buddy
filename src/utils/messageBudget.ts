@@ -56,10 +56,14 @@ export function transcriptBudget(fixedChars: number, target = TURN_MESSAGE_TARGE
 	return Math.max(MIN_TRANSCRIPT_CHARS, target - fixedChars);
 }
 
-/** Splits a total budget evenly across `count` sections, with a sane floor. */
+/**
+ * Splits a total budget evenly across `count` sections, with a sane floor. The
+ * floor never lifts a section above `total` — the budget stays a hard bound even
+ * when there are more sections than the floor can serve.
+ */
 export function perSectionBudget(total: number, count: number, minimum = 500): number {
 	if (count <= 0) return total;
-	return Math.max(minimum, Math.floor(total / count));
+	return Math.min(total, Math.max(minimum, Math.floor(total / count)));
 }
 
 /**

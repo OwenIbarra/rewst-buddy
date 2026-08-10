@@ -40,6 +40,10 @@ export const MAX_BUDDY_TOOL_ROUNDS = 8;
 // We pretty much never want the "stopped" message to actually surface, so this
 // escalates through many attempts before giving up (#175).
 export const MAX_NATIVE_REDIRECT_ATTEMPTS = 25;
+// Catalog-lookup (buddy_tool_details) rounds allowed per chat response. Separate
+// from the Rewst tool-round cap so reading the manifest never spends the budget
+// meant for real work, while a model that only ever asks for details still stops.
+export const MAX_TOOL_DETAILS_ROUNDS = 6;
 // The backend manages its own context window; these are picker-display
 // estimates, not enforced limits.
 const MAX_INPUT_TOKENS = 128_000;
@@ -289,10 +293,7 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 	}
 
 	private cachedToolInstructions(specs: readonly ToolSpec[]): string {
-		const key = specs
-			.map(spec => spec.name)
-			.sort()
-			.join('|');
+		const key = manifestFingerprint(specs);
 		let value = this.toolInstructionsCache.get(key);
 		if (value === undefined) {
 			// Budgeted: the full manifest of every advertised tool is far larger than
@@ -512,6 +513,8 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 			let downgrade = false;
 			// In-process buddy tool rounds taken within this chat response.
 			let buddyRounds = 0;
+			// Catalog-lookup rounds, capped separately from real Rewst tool work.
+			let detailsRounds = 0;
 			// Once a buddy tool has actually run, its side effects (and the consumed
 			// backend round) make a stateless restart unsafe — a write would re-apply.
 			let ranBuddyTool = false;
@@ -642,9 +645,27 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 				// not run here; the results message tells the backend to re-issue them.
 				if (buddyRequests.length > 0) {
 					emitText(remainder);
+					// A catalog lookup is not Rewst work: it reads this turn's own tool
+					// specs, so charging it against the tool-round cap would spend the
+					// user's budget on reading the manifest instead of doing the task.
+					// It gets its own, separate ceiling so a model that only ever asks
+					// for details still terminates.
+					const chargeable = buddyRequests.filter(request => request.tool !== TOOL_DETAILS_TOOL_NAME);
+					if (chargeable.length === 0) {
+						if (detailsRounds >= MAX_TOOL_DETAILS_ROUNDS) {
+							needsSeparator = true;
+							emitText(
+								'*Stopped after repeated tool-detail lookups without a final answer. Ask again to continue.*\n',
+							);
+							storeContinuity([]);
+							emitBreadcrumb();
+							return;
+						}
+						detailsRounds += 1;
+					}
 					// Cap BEFORE running: a capped round must not execute, or a write
 					// would take effect with no result fed back and no final answer.
-					if (buddyRounds >= maxBuddyToolRounds) {
+					if (chargeable.length > 0 && buddyRounds >= maxBuddyToolRounds) {
 						needsSeparator = true;
 						emitText(
 							`*Stopped after ${maxBuddyToolRounds} Rewst tool call${maxBuddyToolRounds === 1 ? '' : 's'} without a final answer. Ask again to continue.*\n`,
@@ -653,7 +674,7 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 						emitBreadcrumb();
 						return;
 					}
-					buddyRounds += 1;
+					if (chargeable.length > 0) buddyRounds += 1;
 					const results: ToolResult[] = [];
 					for (const request of buddyRequests) {
 						// Stop launching further tools (a later one may be a write) once
@@ -810,12 +831,14 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 		const instructions = specs.length > 0 && toolSteering ? `\n\n${toolSteering}` : '';
 		const reminder = `\n\n${this.cachedNativeToolReminder(permittedNames)}`;
 		// A pasted file or a huge selection can make the user's own turn overrun the
-		// message limit on its own; trim it against what the fixed parts leave.
+		// message limit on its own; trim the user's content against what the fixed
+		// parts leave. Standing instructions are prepended AFTER the trim (as on the
+		// stateless path) so a cut never lands mid-instruction.
 		const userTurn = truncateToBudget(
-			prependInstructions(this.trailingText(messages), customInstructions),
-			transcriptBudget(rootLine.length + instructions.length + reminder.length),
+			this.trailingText(messages),
+			transcriptBudget(rootLine.length + instructions.length + reminder.length + customInstructions.length),
 		);
-		return `${userTurn}${rootLine}${instructions}${reminder}`;
+		return `${prependInstructions(userTurn, customInstructions)}${rootLine}${instructions}${reminder}`;
 	}
 
 	private workspaceRootLine(): string {

@@ -11,6 +11,7 @@ import { conversationMap } from './conversationMap';
 import {
 	MAX_BUDDY_TOOL_ROUNDS,
 	MAX_NATIVE_REDIRECT_ATTEMPTS,
+	MAX_TOOL_DETAILS_ROUNDS,
 	normalizeBuddyToolRounds,
 	RoboRewstyChatModelProvider,
 	truncateArgsLabel,
@@ -1458,6 +1459,70 @@ suite('Unit: RoboRewstyChatModelProvider', () => {
 			);
 		});
 
+		test('re-sends the full manifest on the stateless retry after a reuse turn errors', async () => {
+			const harness = makeHarness(
+				[
+					completeTurn('first'),
+					// The reuse turn fails before any output → downgrade to stateless.
+					[{ kind: 'error', message: 'conversation not found' }],
+					completeTurn('second'),
+				],
+				{ buddyToolSpecs: () => manyBuddySpecs },
+			);
+			const first = [message(User, [text('one')])];
+			await harness.run(first);
+			await harness.run([
+				...first,
+				message(Assistant, [text(visibleText(harness.parts))]),
+				message(User, [text('two')]),
+			]);
+
+			assert.strictEqual(harness.captured.length, 3, 'the failed reuse turn is retried statelessly');
+			assert.ok(
+				!harness.captured[1].message.includes('Tool catalog (summary only):'),
+				'the reuse attempt used the refresher',
+			);
+			assert.ok(
+				harness.captured[2].message.includes('Tool catalog (summary only):'),
+				'the fresh conversation gets the full manifest again',
+			);
+			assert.strictEqual(harness.captured[2].conversationId, undefined, 'the retry starts a fresh conversation');
+		});
+
+		test('a tool-result turn does not count as having sent the manifest', async () => {
+			const harness = makeHarness(
+				[
+					// Round 1: the model asks for a VS Code editor tool.
+					completeTurn('```vscode-tool\n{"tool": "read_file", "args": {"path": "a.txt"}}\n```'),
+					completeTurn('answer'),
+					completeTurn('follow-up answer'),
+				],
+				{ buddyToolSpecs: () => manyBuddySpecs },
+			);
+			const tools = [{ name: 'read_file', description: 'Read a file.', inputSchema: { type: 'object' } }];
+			const first = [message(User, [text('read a.txt')])];
+			await harness.run(first, tools);
+
+			const call = harness.parts.find(
+				(part): part is vscode.LanguageModelToolCallPart => part instanceof vscode.LanguageModelToolCallPart,
+			);
+			assert.ok(call, 'an editor tool call was emitted');
+			// VS Code replays the result; that turn carries results only, no manifest.
+			await harness.run(
+				[
+					...first,
+					message(Assistant, [call]),
+					message(User, [new vscode.LanguageModelToolResultPart(call.callId, [text('file body')])]),
+				],
+				tools,
+			);
+
+			assert.strictEqual(harness.captured.length, 2);
+			const resultsTurn = harness.captured[1].message;
+			assert.ok(resultsTurn.startsWith('Tool results:'), 'the results turn carries only results');
+			assert.ok(!resultsTurn.includes('Tool catalog (summary only):'), 'no manifest rides a results turn');
+		});
+
 		test('re-sends the full manifest when the available tool set changed', async () => {
 			let specs = manyBuddySpecs;
 			const harness = makeHarness([completeTurn('first'), completeTurn('second')], {
@@ -1537,6 +1602,53 @@ suite('Unit: RoboRewstyChatModelProvider', () => {
 				'the example is not a details call with no names',
 			);
 			assert.ok(sent.includes('{"tool": "read_file"'), 'the example uses a real tool');
+		});
+
+		test('a catalog lookup does not spend a Rewst tool round', async () => {
+			// maxBuddyToolRounds is the budget for real Rewst work; reading the manifest
+			// must not consume it, or a couple of lookups would starve the task.
+			const harness = makeHarness(
+				[
+					completeTurn(
+						`\`\`\`vscode-tool\n{"tool": "${TOOL_DETAILS_TOOL_NAME}", "args": {"tools": ["buddy_tool_5"]}}\n\`\`\``,
+					),
+					completeTurn(
+						`\`\`\`vscode-tool\n{"tool": "${TOOL_DETAILS_TOOL_NAME}", "args": {"tools": ["buddy_tool_6"]}}\n\`\`\``,
+					),
+					completeTurn('```vscode-tool\n{"tool": "buddy_tool_5", "args": {}}\n```'),
+					completeTurn('done'),
+				],
+				{
+					buddyToolSpecs: () => manyBuddySpecs,
+					aiConfig: () => ({
+						customInstructions: '',
+						conversationType: 'HELP_DOCS',
+						showActivity: true,
+						// One Rewst round only: the two lookups must still get through.
+						maxBuddyToolRounds: 1,
+					}),
+					runBuddyTool: async () => ({ text: 'real tool output', isError: false }),
+				},
+			);
+			await harness.run([message(User, [text('use tool 5')])]);
+
+			assert.strictEqual(harness.captured.length, 4, 'both lookups and the real call ran');
+			assert.ok(!visibleText(harness.parts).includes('Stopped after 1 Rewst tool call'), 'the cap did not trip');
+			assert.ok(visibleText(harness.parts).includes('done'), 'the turn reached its answer');
+		});
+
+		test('stops a response that only ever asks for tool details', async () => {
+			const lookup = completeTurn(
+				`\`\`\`vscode-tool\n{"tool": "${TOOL_DETAILS_TOOL_NAME}", "args": {"tools": ["buddy_tool_5"]}}\n\`\`\``,
+			);
+			const harness = makeHarness([lookup], { buddyToolSpecs: () => manyBuddySpecs });
+			await harness.run([message(User, [text('hi')])]);
+
+			assert.ok(
+				visibleText(harness.parts).includes('repeated tool-detail lookups'),
+				'the details-only loop is bounded',
+			);
+			assert.ok(harness.captured.length <= MAX_TOOL_DETAILS_ROUNDS + 1, 'it stops at its own ceiling');
 		});
 
 		test('keeps a huge stateless transcript under the backend message limit', async () => {

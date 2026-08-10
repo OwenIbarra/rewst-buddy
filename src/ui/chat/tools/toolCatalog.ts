@@ -115,7 +115,13 @@ const ENTRY_COST = (rendered: string): number => rendered.length + 1;
  * else a summary, else its name. Order matters — VS Code editor tools are
  * advertised first, so with a large registry they keep their exact schemas
  * (the model calls them constantly) while the long tail degrades to summaries
- * and names it can expand on demand. `buddy_tool_details` is always detailed.
+ * and names it can expand on demand. Callers list `buddy_tool_details` first so
+ * the catalog's own entry point is the first to earn full detail.
+ *
+ * `budget` bounds the rendered entries, down to the floor of listing every tool
+ * by name: a tool is never dropped to satisfy the budget, since an unlisted tool
+ * is an uncallable one. Callers pass a budget far above that floor, and the
+ * transport clamp is the backstop.
  */
 export function planToolManifest(specs: readonly ToolSpec[], budget: number): ToolManifestPlan {
 	const detailChars = specs.reduce((sum, spec) => sum + ENTRY_COST(renderToolDetailEntry(spec)), 0);
@@ -136,7 +142,7 @@ export function planToolManifest(specs: readonly ToolSpec[], budget: number): To
 		const rest = floorAfter[i + 1];
 		const detailCost = ENTRY_COST(renderToolDetailEntry(spec));
 		const catalogCost = ENTRY_COST(renderToolCatalogEntry(spec));
-		if (spec.name === TOOL_DETAILS_TOOL_NAME || detailCost + rest <= remaining) {
+		if (detailCost + rest <= remaining) {
 			detailed.push(spec);
 			remaining -= detailCost;
 		} else if (catalogCost + rest <= remaining) {
@@ -150,6 +156,32 @@ export function planToolManifest(specs: readonly ToolSpec[], budget: number): To
 	return { detailed, cataloged, named };
 }
 
+const REFRESHER_PROTOCOL_LINE =
+	'Local tool protocol reminder: the tool manifest sent earlier in this conversation still applies. Request a local tool by writing a fenced `vscode-tool` JSON block in your reply text — the extension intercepts the block and runs it through VS Code. These names are not in your native function registry; never invoke them as native Rewst function calls. When you use a tool, reply with the block(s) and at most one short lead-in sentence.';
+
+/**
+ * Comma-separated tool names within `budget`. A registry too large to name in
+ * full is cut with a count of the remainder, which stays truthful about
+ * availability (they are all still callable, and expandable via the details
+ * lookup) while keeping the refresher a bounded cost.
+ */
+function renderNameList(specs: readonly ToolSpec[], budget: number): string {
+	const tail = (kept: number): string =>
+		`, and ${specs.length - kept} more (all callable; use ${TOOL_DETAILS_TOOL_NAME} for any name).`;
+	const tailReserve = tail(0).length;
+	const names: string[] = [];
+	let spent = 0;
+	for (const spec of specs) {
+		const cost = spec.name.length + 2;
+		if (spent + cost > Math.max(0, budget - tailReserve)) {
+			return `${names.join(', ')}${tail(names.length)}`;
+		}
+		names.push(spec.name);
+		spent += cost;
+	}
+	return `${names.join(', ')}.`;
+}
+
 /**
  * Compact stand-in for the manifest on a turn that reuses a warm backend
  * conversation. The conversation already carries the full manifest from its
@@ -161,16 +193,16 @@ export function planToolManifest(specs: readonly ToolSpec[], budget: number): To
 export function buildToolRefresher(specs: readonly ToolSpec[], budget: number): string {
 	if (specs.length === 0) return '';
 	const { cataloged, named } = planToolManifest([TOOL_DETAILS_SPEC, ...specs], budget);
-	const lines = [
-		'---',
-		'Local tool protocol reminder: the tool manifest sent earlier in this conversation still applies. Request a local tool by writing a fenced `vscode-tool` JSON block in your reply text — the extension intercepts the block and runs it through VS Code. These names are not in your native function registry; never invoke them as native Rewst function calls. When you use a tool, reply with the block(s) and at most one short lead-in sentence.',
-		`Tools available this turn: ${specs.map(spec => spec.name).join(', ')}.`,
-	];
-	if (cataloged.length + named.length > 0) {
-		lines.push(
-			`For a tool the manifest did not list with a full args schema, request \`${TOOL_DETAILS_TOOL_NAME}\` with its name to get its exact args before calling it.`,
-		);
-	}
+	const hint =
+		cataloged.length + named.length > 0
+			? `For a tool the manifest did not list with a full args schema, request \`${TOOL_DETAILS_TOOL_NAME}\` with its name to get its exact args before calling it.`
+			: '';
+	const namesLabel = 'Tools available this turn: ';
+	// Everything except the name list has to be sent whole, so the names get what
+	// is left of the budget after it.
+	const framing = '---'.length + REFRESHER_PROTOCOL_LINE.length + namesLabel.length + hint.length + 4;
+	const lines = ['---', REFRESHER_PROTOCOL_LINE, `${namesLabel}${renderNameList(specs, budget - framing)}`];
+	if (hint) lines.push(hint);
 	return lines.join('\n');
 }
 

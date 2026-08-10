@@ -136,6 +136,38 @@ async function* payloadsOf(
 	}
 }
 
+export interface ConversationVariables extends Record<string, unknown> {
+	message: string;
+	orgId: string;
+	conversationId: string | null;
+	conversationType: string;
+	metadata: { orgId: string };
+	resumeRequestId: string | null;
+}
+
+/**
+ * Subscription variables for one turn. Separated from the transport so the wire's
+ * last-defense clamp is testable: the backend rejects an over-long message
+ * outright, failing the whole turn, and callers budget their own pieces
+ * (utils/messageBudget.ts), so no path may reach the socket unclamped (#189).
+ */
+export function conversationVariables(options: AskOptions, orgId: string): ConversationVariables {
+	const clamped = clampConversationMessage(options.message);
+	if (clamped.trimmed > 0) {
+		log.info(`askRewstAi: message clamped to the backend limit (dropped ${clamped.trimmed} chars)`);
+	}
+	return {
+		message: clamped.message,
+		orgId,
+		conversationId: options.conversationId ?? null,
+		conversationType: options.conversationType ?? 'HELP_DOCS',
+		// Without metadata.orgId the server registers the request and then
+		// silently never processes it (docs/dev/rewst-ai-api.md).
+		metadata: { orgId },
+		resumeRequestId: options.resumeRequestId ?? null,
+	};
+}
+
 /**
  * Ask RoboRewsty a question over the conversationMessage subscription.
  * Yields typed events until complete/error; cancellation tears down the socket.
@@ -170,24 +202,7 @@ export async function* askRewstAi(options: AskOptions): AsyncGenerator<Conversat
 	};
 	const cancelListener = options.cancellation?.onCancellationRequested(dispose);
 
-	// The backend rejects an over-long message outright, failing the whole turn.
-	// Callers budget their own pieces (utils/messageBudget.ts); this is the wire's
-	// last-defense clamp so no path can trip that error (#189).
-	const clamped = clampConversationMessage(options.message);
-	if (clamped.trimmed > 0) {
-		log.info(`askRewstAi: message clamped to the backend limit (dropped ${clamped.trimmed} chars)`);
-	}
-
-	const variables = {
-		message: clamped.message,
-		orgId,
-		conversationId: options.conversationId ?? null,
-		conversationType: options.conversationType ?? 'HELP_DOCS',
-		// Without metadata.orgId the server registers the request and then
-		// silently never processes it (docs/dev/rewst-ai-api.md).
-		metadata: { orgId },
-		resumeRequestId: options.resumeRequestId ?? null,
-	};
+	const variables = conversationVariables(options, orgId);
 
 	log.debug('askRewstAi: starting subscription', {
 		orgId,

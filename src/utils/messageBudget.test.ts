@@ -47,7 +47,13 @@ suite('Unit: messageBudget', () => {
 		});
 
 		test('honors the floor for many sections', () => {
-			assert.strictEqual(perSectionBudget(1_000, 100, 500), 500);
+			assert.strictEqual(perSectionBudget(4_000, 4, 500), 1_000);
+		});
+
+		test('never hands a section more than the total budget', () => {
+			// The floor must not lift a section above the budget it is drawn from.
+			assert.strictEqual(perSectionBudget(1_000, 100, 5_000), 1_000);
+			assert.strictEqual(perSectionBudget(200, 1, 500), 200);
 		});
 
 		test('returns the total when there are no sections', () => {

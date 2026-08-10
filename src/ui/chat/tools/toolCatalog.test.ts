@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import { suite, test } from '../../../test/tdd';
 import {
+	buildToolRefresher,
 	MAX_TOOL_DETAILS_REQUESTED,
 	mcpToolTail,
 	parseRequestedToolNames,
@@ -105,13 +106,57 @@ suite('Unit: toolCatalog', () => {
 			assert.strictEqual(new Set(seen).size, specs.length, 'no tool is dropped or duplicated');
 		});
 
-		test('always details the details tool itself, however tight the budget', () => {
-			const specs = [...Array.from({ length: 60 }, (_, i) => spec(`t_${i}`)), TOOL_DETAILS_SPEC];
-			const plan = planToolManifest(specs, 100);
-			assert.ok(
-				plan.detailed.some(s => s.name === TOOL_DETAILS_TOOL_NAME),
-				'the catalog expansion tool is never summary-only',
-			);
+		test('details the details tool first, since callers list it first', () => {
+			const specs = [TOOL_DETAILS_SPEC, ...Array.from({ length: 60 }, (_, i) => spec(`t_${i}`))];
+			const plan = planToolManifest(specs, 8_000);
+			assert.strictEqual(plan.detailed[0].name, TOOL_DETAILS_TOOL_NAME);
+		});
+
+		test('falls back to the name floor rather than dropping tools on an impossible budget', () => {
+			const specs = [TOOL_DETAILS_SPEC, ...Array.from({ length: 60 }, (_, i) => spec(`t_${i}`))];
+			// Below the cost of even naming every tool: listing them all wins, since an
+			// unlisted tool is an uncallable one.
+			const plan = planToolManifest(specs, 400);
+			const nameFloor = specs.reduce((sum, s) => sum + renderToolNameEntry(s).length + 1, 0);
+			const rendered = [
+				...plan.detailed.map(renderToolDetailEntry),
+				...plan.cataloged.map(renderToolCatalogEntry),
+				...plan.named.map(renderToolNameEntry),
+			].join('\n');
+
+			assert.strictEqual(plan.detailed.length + plan.cataloged.length + plan.named.length, specs.length);
+			assert.ok(rendered.length <= nameFloor, `manifest was ${rendered.length} chars, floor ${nameFloor}`);
+		});
+	});
+
+	suite('buildToolRefresher()', () => {
+		test('returns nothing when no tools are advertised', () => {
+			assert.strictEqual(buildToolRefresher([], 10_000), '');
+		});
+
+		test('names the available tools and points at the details lookup when tools are abbreviated', () => {
+			const specs = Array.from({ length: 60 }, (_, i) => spec(`buddy_tool_${i}`));
+			const refresher = buildToolRefresher(specs, 8_000);
+
+			assert.ok(refresher.includes('Local tool protocol reminder'));
+			assert.ok(refresher.includes('buddy_tool_0'), 'available names are listed');
+			assert.ok(refresher.includes(TOOL_DETAILS_TOOL_NAME), 'the expansion route is named');
+			assert.ok(refresher.length < 8_000, `refresher was ${refresher.length} chars`);
+		});
+
+		test('omits the details hint when the manifest listed everything in full', () => {
+			const refresher = buildToolRefresher([spec('read_file', 60, 40)], 100_000);
+			assert.ok(refresher.includes('read_file'));
+			assert.ok(!refresher.includes(TOOL_DETAILS_TOOL_NAME), 'nothing needs expanding');
+		});
+
+		test('cuts the name list to stay within budget, disclosing the remainder', () => {
+			const specs = Array.from({ length: 400 }, (_, i) => spec(`buddy_very_long_tool_name_${i}`));
+			const budget = 2_000;
+			const refresher = buildToolRefresher(specs, budget);
+
+			assert.ok(refresher.length <= budget, `refresher was ${refresher.length} chars, budget ${budget}`);
+			assert.ok(/and \d+ more \(all callable/.test(refresher), 'the cut is disclosed truthfully');
 		});
 	});
 

@@ -90,9 +90,9 @@ Source: `src/ui/chat/model/statelessTranscript.ts`.
 ### Requirement: Keep every turn message within the backend's length limit
 
 Rewst's conversation API rejects a message longer than its per-message character
-limit (60000), which fails the whole turn before any answer streams. The system
-SHALL assemble each turn message against a character budget so that limit is
-never reached, and SHALL clamp the message at the transport as a last defense.
+limit, which fails the whole turn before any answer streams. The system SHALL
+assemble each turn message against a character budget so that limit is never
+reached, and SHALL clamp the message at the transport as a last defense.
 Each elastic part of a turn SHALL be bounded: the tool manifest, the stateless
 visible transcript, an ordinary user turn's own text, and the tool-result
 messages fed back into the conversation. Trimming SHALL preserve the newest
@@ -286,6 +286,15 @@ within the same extension session, and vice versa.
 - **GIVEN** an assistant response that keeps requesting tools
 - **WHEN** the number of Buddy tool rounds reaches the configured cap
 - **THEN** further tool rounds are stopped for that response
+
+#### Scenario: A catalog lookup is not Rewst tool work
+
+- **GIVEN** an assistant response that requests `buddy_tool_details`
+- **WHEN** that round contains no other Buddy tool request
+- **THEN** it does not consume a Buddy tool round from
+  `rewst-buddy.ai.maxBuddyToolRounds`
+- **AND** a response that only ever requests tool details is still stopped by its
+  own separate ceiling
 
 ### Requirement: Parse the local tool protocol defensively
 

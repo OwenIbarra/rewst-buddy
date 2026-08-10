@@ -97,26 +97,42 @@ suite('Unit: toolTranslation', () => {
 		});
 
 		test('caps a huge output so the results message fits the backend limit (#189)', () => {
+			const budget = 5_000;
 			const message = formatInProcessToolResults(
 				[{ tool: 'buddy_execution_logs', argsLabel: '', ok: true, output: 'x'.repeat(200_000) }],
-				5_000,
+				budget,
 			);
-			assert.ok(message.length < 6_000, `results message was ${message.length} chars`);
+			// The budget bounds the whole message: labels, fences and the closing
+			// instruction are reserved before any output is kept.
+			assert.ok(message.length <= budget, `results message was ${message.length} chars, budget ${budget}`);
 			assert.ok(/truncated/.test(message), 'the cut is marked for the model');
 		});
 
 		test('splits the output budget across several results', () => {
+			const budget = 8_000;
 			const results = Array.from({ length: 4 }, (_, i) => ({
 				tool: `buddy_tool_${i}`,
 				argsLabel: '',
 				ok: true,
 				output: 'y'.repeat(50_000),
 			}));
-			const message = formatInProcessToolResults(results, 8_000);
-			assert.ok(message.length < 10_000, `results message was ${message.length} chars`);
+			const message = formatInProcessToolResults(results, budget);
+			assert.ok(message.length <= budget, `results message was ${message.length} chars, budget ${budget}`);
 			for (let i = 0; i < results.length; i++) {
 				assert.ok(message.includes(`buddy_tool_${i}`), `result ${i} is still reported`);
 			}
+		});
+
+		test('stays within budget when the args labels are themselves huge', () => {
+			const budget = 4_000;
+			const results = Array.from({ length: 3 }, (_, i) => ({
+				tool: `buddy_tool_${i}`,
+				argsLabel: JSON.stringify({ blob: 'a'.repeat(20_000) }),
+				ok: true,
+				output: 'z'.repeat(10_000),
+			}));
+			const message = formatInProcessToolResults(results, budget);
+			assert.ok(message.length <= budget, `results message was ${message.length} chars, budget ${budget}`);
 		});
 
 		test('marks a failed result so the model does not treat the error text as data', () => {
@@ -135,9 +151,20 @@ suite('Unit: toolTranslation', () => {
 				new Map([['call-1', { name: 'read_file', input: { path: 'big.log' } }]]),
 				5_000,
 			);
-			assert.ok(message.length < 6_000, `results message was ${message.length} chars`);
+			assert.ok(message.length <= 5_000, `results message was ${message.length} chars`);
 			assert.ok(message.includes('read_file'), 'the tool is still labeled');
 			assert.ok(/truncated/.test(message), 'the cut is marked for the model');
+		});
+
+		test('stays within budget when the echoed call input is huge', () => {
+			const budget = 4_000;
+			const message = formatToolResultsMessage(
+				[{ callId: 'call-1', content: [new vscode.LanguageModelTextPart('z'.repeat(50_000))] }],
+				new Map([['call-1', { name: 'create_file', input: { content: 'a'.repeat(80_000) } }]]),
+				budget,
+			);
+			assert.ok(message.length <= budget, `results message was ${message.length} chars, budget ${budget}`);
+			assert.ok(message.includes('create_file'), 'the tool is still labeled');
 		});
 	});
 

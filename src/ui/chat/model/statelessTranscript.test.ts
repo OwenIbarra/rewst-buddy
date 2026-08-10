@@ -98,26 +98,31 @@ suite('Unit: statelessTranscript', () => {
 		);
 	});
 	suite('message length budget (#189)', () => {
-		test('drops the oldest entries to fit an explicit budget', () => {
+		test('drops the oldest entries to fit an explicit budget, tags included', () => {
+			const budget = 2_000;
 			const transcript = serializeVisibleChat(
 				[
 					message(User, [text('a'.repeat(3_000))]),
 					message(Assistant, [text('b'.repeat(3_000))]),
 					message(User, [text('c'.repeat(1_000))]),
 				],
-				2_000,
+				budget,
 			);
 
-			assert.ok(transcript.length < 4_000, `transcript was ${transcript.length} chars`);
+			// The budget bounds the WHOLE serialized transcript, wrapper tags and the
+			// fixed instruction line included — not just the entries inside it.
+			assert.ok(transcript.length <= budget, `transcript was ${transcript.length} chars, budget ${budget}`);
 			assert.ok(transcript.includes('c'.repeat(1_000)), 'the latest turn is kept');
 			assert.ok(transcript.includes('earlier message(s) omitted'), 'the drop is disclosed');
 		});
 
 		test('truncates the newest entry when it alone overruns the budget', () => {
-			const transcript = serializeVisibleChat([message(User, [text('c'.repeat(20_000))])], 3_000);
+			const budget = 3_000;
+			const transcript = serializeVisibleChat([message(User, [text('c'.repeat(20_000))])], budget);
 
-			assert.ok(transcript.length < 4_000, `transcript was ${transcript.length} chars`);
+			assert.ok(transcript.length <= budget, `transcript was ${transcript.length} chars, budget ${budget}`);
 			assert.ok(/truncated/.test(transcript), 'the cut is marked');
+			assert.ok(transcript.endsWith('</visible_chat_transcript>'), 'the wrapper survives the trim');
 		});
 	});
 });
