@@ -1,3 +1,4 @@
+import { perSectionBudget, TOOL_RESULTS_BUDGET_CHARS, truncateToBudget } from '@utils';
 import vscode from 'vscode';
 import { parseToolRequests, type ToolRequest, type ToolResult, type ToolSpec } from '../tools/toolProtocol';
 
@@ -63,15 +64,42 @@ export function partitionToolRequests(
  * {@link formatToolResultsMessage}; a failed result is labeled so the model
  * reads it as an error to recover from, not as tool data.
  */
-export function formatInProcessToolResults(results: readonly ToolResult[]): string {
-	const sections: string[] = ['Tool results:'];
-	for (const result of results) {
-		const argsLabel = result.argsLabel ? ` ${result.argsLabel}` : '';
+export function formatInProcessToolResults(results: readonly ToolResult[], budget = TOOL_RESULTS_BUDGET_CHARS): string {
+	const headers = results.map(result => {
+		const argsLabel = result.argsLabel ? ` ${truncateToBudget(result.argsLabel, MAX_ARGS_LABEL_CHARS)}` : '';
 		const status = result.ok ? '' : ' (error)';
-		sections.push(`### ${result.tool}${argsLabel}${status}\n\`\`\`\n${result.output}\n\`\`\``);
-	}
-	sections.push('Reply with more vscode-tool blocks if you need anything else, or give your final answer.');
+		return `### ${result.tool}${argsLabel}${status}\n\`\`\`\n`;
+	});
+	// Labels, fences and the trailing instruction have to be sent whole, so only
+	// what is left after them is available for result content.
+	const perResult = perSectionBudget(contentBudget(budget, headers), results.length);
+	const sections: string[] = [RESULTS_HEADER];
+	results.forEach((result, index) => {
+		sections.push(`${headers[index]}${truncateToBudget(result.output, perResult)}\n\`\`\``);
+	});
+	sections.push(RESULTS_FOOTER);
 	return sections.join('\n\n');
+}
+
+/** Cap on the echoed args label in a result header. */
+const MAX_ARGS_LABEL_CHARS = 300;
+
+const RESULTS_HEADER = 'Tool results:';
+const RESULTS_FOOTER = 'Reply with more vscode-tool blocks if you need anything else, or give your final answer.';
+
+/**
+ * Characters left for result content once every fixed part of the message — the
+ * header, footer, per-result labels/fences and the separators between them — is
+ * accounted for. Never negative; a pathological label set simply leaves nothing
+ * for content rather than pushing the message over budget.
+ */
+function contentBudget(budget: number, headers: readonly string[]): number {
+	const framing =
+		RESULTS_HEADER.length +
+		RESULTS_FOOTER.length +
+		headers.reduce((sum, header) => sum + header.length + '\n```'.length, 0) +
+		(headers.length + 1) * '\n\n'.length;
+	return Math.max(0, budget - framing);
 }
 
 interface ToolCallInfo {
@@ -140,16 +168,24 @@ function partText(part: unknown): string {
 export function formatToolResultsMessage(
 	results: readonly ToolResultPartLike[],
 	calls: ReadonlyMap<string, ToolCallInfo>,
+	budget = TOOL_RESULTS_BUDGET_CHARS,
 ): string {
-	const sections: string[] = ['Tool results:'];
-	for (const result of results) {
+	// An args label is echoed from the model's own call and can itself be huge, so
+	// it is capped before being charged against the framing.
+	const headers = results.map(result => {
 		const call = calls.get(result.callId);
 		const name = call?.name ?? 'tool';
-		const argsLabel = call?.input === undefined ? '' : ` ${JSON.stringify(call.input)}`;
+		const argsLabel =
+			call?.input === undefined ? '' : ` ${truncateToBudget(JSON.stringify(call.input), MAX_ARGS_LABEL_CHARS)}`;
+		return `### ${name}${argsLabel}\n\`\`\`\n`;
+	});
+	const perResult = perSectionBudget(contentBudget(budget, headers), results.length);
+	const sections: string[] = [RESULTS_HEADER];
+	results.forEach((result, index) => {
 		const output = result.content.map(partText).filter(Boolean).join('\n');
-		sections.push(`### ${name}${argsLabel}\n\`\`\`\n${output}\n\`\`\``);
-	}
-	sections.push('Reply with more vscode-tool blocks if you need anything else, or give your final answer.');
+		sections.push(`${headers[index]}${truncateToBudget(output, perResult)}\n\`\`\``);
+	});
+	sections.push(RESULTS_FOOTER);
 	return sections.join('\n\n');
 }
 

@@ -2,12 +2,13 @@ import * as assert from 'assert';
 import * as Mocha from 'mocha';
 import vscode from 'vscode';
 import {
-    chatToolSpecs,
-    collectToolCalls,
-    extractTrailingToolResults,
-    formatInProcessToolResults,
-    partitionToolRequests,
-    rejectedToolsNote,
+	chatToolSpecs,
+	collectToolCalls,
+	extractTrailingToolResults,
+	formatInProcessToolResults,
+	formatToolResultsMessage,
+	partitionToolRequests,
+	rejectedToolsNote,
 } from './toolTranslation';
 
 const { suite, test } = Mocha;
@@ -95,12 +96,110 @@ suite('Unit: toolTranslation', () => {
 			assert.ok(message.includes('give your final answer'));
 		});
 
+		test('caps a huge output so the results message fits the backend limit (#189)', () => {
+			const budget = 5_000;
+			const message = formatInProcessToolResults(
+				[{ tool: 'buddy_execution_logs', argsLabel: '', ok: true, output: 'x'.repeat(200_000) }],
+				budget,
+			);
+			// The budget bounds the whole message: labels, fences and the closing
+			// instruction are reserved before any output is kept.
+			assert.ok(message.length <= budget, `results message was ${message.length} chars, budget ${budget}`);
+			assert.ok(/truncated/.test(message), 'the cut is marked for the model');
+		});
+
+		test('splits the output budget across several results', () => {
+			const budget = 8_000;
+			const results = Array.from({ length: 4 }, (_, i) => ({
+				tool: `buddy_tool_${i}`,
+				argsLabel: '',
+				ok: true,
+				output: 'y'.repeat(50_000),
+			}));
+			const message = formatInProcessToolResults(results, budget);
+			assert.ok(message.length <= budget, `results message was ${message.length} chars, budget ${budget}`);
+			for (let i = 0; i < results.length; i++) {
+				assert.ok(message.includes(`buddy_tool_${i}`), `result ${i} is still reported`);
+			}
+		});
+
+		test('stays within budget with more results than the budget can generously serve', () => {
+			// Regression: an even split below the old per-section floor handed every
+			// result the floor instead, so twelve results overran the whole budget.
+			const budget = 6_000;
+			const results = Array.from({ length: 12 }, (_, i) => ({
+				tool: `buddy_tool_${i}`,
+				argsLabel: '',
+				ok: true,
+				output: 'y'.repeat(5_000),
+			}));
+			const message = formatInProcessToolResults(results, budget);
+
+			assert.ok(message.length <= budget, `results message was ${message.length} chars, budget ${budget}`);
+			for (let i = 0; i < results.length; i++) {
+				assert.ok(message.includes(`buddy_tool_${i}`), `result ${i} is still reported`);
+			}
+		});
+
+		test('stays within budget when the args labels are themselves huge', () => {
+			const budget = 4_000;
+			const results = Array.from({ length: 3 }, (_, i) => ({
+				tool: `buddy_tool_${i}`,
+				argsLabel: JSON.stringify({ blob: 'a'.repeat(20_000) }),
+				ok: true,
+				output: 'z'.repeat(10_000),
+			}));
+			const message = formatInProcessToolResults(results, budget);
+			assert.ok(message.length <= budget, `results message was ${message.length} chars, budget ${budget}`);
+		});
+
 		test('marks a failed result so the model does not treat the error text as data', () => {
 			const message = formatInProcessToolResults([
 				{ tool: 'buddy_workflow_get', argsLabel: '', ok: false, output: 'org_required' },
 			]);
 			assert.ok(/error/i.test(message));
 			assert.ok(message.includes('org_required'));
+		});
+	});
+
+	suite('formatToolResultsMessage()', () => {
+		test('caps a huge editor tool output so the message fits the backend limit (#189)', () => {
+			const message = formatToolResultsMessage(
+				[{ callId: 'call-1', content: [new vscode.LanguageModelTextPart('z'.repeat(200_000))] }],
+				new Map([['call-1', { name: 'read_file', input: { path: 'big.log' } }]]),
+				5_000,
+			);
+			assert.ok(message.length <= 5_000, `results message was ${message.length} chars`);
+			assert.ok(message.includes('read_file'), 'the tool is still labeled');
+			assert.ok(/truncated/.test(message), 'the cut is marked for the model');
+		});
+
+		test('stays within budget with many replayed editor tool results', () => {
+			const budget = 6_000;
+			const results = Array.from({ length: 12 }, (_, i) => ({
+				callId: `call-${i}`,
+				content: [new vscode.LanguageModelTextPart('z'.repeat(5_000))],
+			}));
+			const calls = new Map(
+				results.map((result, i) => [result.callId, { name: `editor_tool_${i}`, input: { path: `f${i}.txt` } }]),
+			);
+			const message = formatToolResultsMessage(results, calls, budget);
+
+			assert.ok(message.length <= budget, `results message was ${message.length} chars, budget ${budget}`);
+			for (let i = 0; i < results.length; i++) {
+				assert.ok(message.includes(`editor_tool_${i}`), `result ${i} is still reported`);
+			}
+		});
+
+		test('stays within budget when the echoed call input is huge', () => {
+			const budget = 4_000;
+			const message = formatToolResultsMessage(
+				[{ callId: 'call-1', content: [new vscode.LanguageModelTextPart('z'.repeat(50_000))] }],
+				new Map([['call-1', { name: 'create_file', input: { content: 'a'.repeat(80_000) } }]]),
+				budget,
+			);
+			assert.ok(message.length <= budget, `results message was ${message.length} chars, budget ${budget}`);
+			assert.ok(message.includes('create_file'), 'the tool is still labeled');
 		});
 	});
 

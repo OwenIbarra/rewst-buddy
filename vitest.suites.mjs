@@ -21,6 +21,8 @@ export const vitestSuites = [
 	'src/capabilities/triggerUpdate.test.ts',
 	'src/sessions/conversation/conversationEvents.test.ts',
 	'src/ui/chat/model/sources.test.ts',
+	'src/ui/chat/tools/toolCatalog.test.ts',
+	'src/utils/messageBudget.test.ts',
 	'src/test/tdd.test.ts',
 	'src/sessions/graphql/sdk.test.ts',
 	'src/ui/jinja/jinjaPreviewRender.test.ts',

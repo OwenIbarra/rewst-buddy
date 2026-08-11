@@ -87,13 +87,138 @@ Source: `src/ui/chat/model/statelessTranscript.ts`.
 - **THEN** that tool result keeps the standard per-entry cap and is not
   prefixed with the terminal-output note
 
+### Requirement: Keep every turn message within the backend's length limit
+
+Rewst's conversation API rejects a message longer than its per-message character
+limit, which fails the whole turn before any answer streams. The system SHALL
+assemble each turn message against a character budget so that limit is never
+reached, and SHALL clamp the message at the transport as a last defense.
+Each elastic part of a turn SHALL be bounded: the tool manifest, the stateless
+visible transcript, an ordinary user turn's own text, and the tool-result
+messages fed back into the conversation. Trimming SHALL preserve the newest
+content (the request being answered) and SHALL mark what was cut, so the
+assistant reads trimmed content as incomplete rather than as the whole story.
+
+Source: `src/utils/messageBudget.ts`,
+`src/ui/chat/model/RoboRewstyChatModelProvider.ts`,
+`src/ui/chat/model/statelessTranscript.ts`,
+`src/ui/chat/model/toolTranslation.ts`,
+`src/sessions/conversation/ConversationClient.ts`.
+
+#### Scenario: Full tool registry on an opening turn
+
+- **GIVEN** every Buddy tool is advertised alongside the chat's editor tools
+- **WHEN** the user sends the first message of a chat
+- **THEN** the assembled message stays within the backend's per-message limit
+- **AND** the turn is answered rather than failing with a length error
+
+#### Scenario: Oversized transcript or tool output
+
+- **GIVEN** a visible transcript, user turn, or tool result far larger than the
+  message budget allows
+- **WHEN** the turn message is assembled
+- **THEN** the newest content is kept and the overflow is trimmed with an
+  explicit truncation marker
+
+#### Scenario: Transport clamp
+
+- **GIVEN** a message that still exceeds the backend's limit when it reaches the
+  conversation transport
+- **WHEN** the subscription is started
+- **THEN** the message is clamped to the limit and the trimmed amount is logged
+
+### Requirement: Advertise tools as a navigable catalog
+
+The full description and args schema of every advertised tool exceeds what one
+message may carry, so the system SHALL render the tool manifest against a
+budget, spending it in advertisement order across three tiers: full description
+plus exact args schema, then a one-line summary, then the tool's name alone.
+Every advertised tool SHALL remain discoverable by name, and spending on an
+earlier tool SHALL NOT cost a later tool its name entry — so a registry too
+large to summarize still lists every tool and still gives the leading tools
+their exact schemas. A Buddy tool that VS Code also passes back under its MCP
+name (`mcp_<server>_<tool>`) is the same operation as the in-process spec and
+SHALL be advertised once, on the in-process path. When any tool is abbreviated,
+the system SHALL advertise a `buddy_tool_details` lookup that returns the full
+description and exact args schema for the named tools, SHALL instruct the
+assistant to expand a summarized tool before calling it rather than guessing its
+args, and SHALL answer that lookup from the tools advertised for the current turn
+— including the chat's editor tools — without touching Rewst data. Tools listed
+in full SHALL be taken in advertisement order, so the chat's editor tools (used
+on nearly every turn) keep their exact schemas.
+
+Source: `src/ui/chat/tools/toolCatalog.ts`, `src/ui/chat/tools/toolProtocol.ts`.
+
+#### Scenario: Manifest fits the budget
+
+- **GIVEN** few enough tools that the full manifest fits the budget
+- **WHEN** the tool instructions are rendered
+- **THEN** every tool is listed with its full description and args schema
+- **AND** no catalog section or details lookup is advertised
+
+#### Scenario: Manifest overflows the budget
+
+- **GIVEN** more tools than the manifest budget can list in full
+- **WHEN** the tool instructions are rendered
+- **THEN** the overflow tools are listed as name-plus-summary catalog entries
+- **AND** `buddy_tool_details` is advertised in full as the way to expand them
+
+#### Scenario: Registry too large to summarize
+
+- **GIVEN** so many tools that even a one-line summary each overruns the budget
+- **WHEN** the tool instructions are rendered
+- **THEN** the editor tools advertised first still carry their exact args schemas
+- **AND** the remaining tools are listed by name, expandable on demand
+
+#### Scenario: The same Buddy tool arrives from VS Code and in-process
+
+- **GIVEN** the chat passes a Buddy tool under its MCP name (the user configured
+  the extension's own `/mcp` bridge as a chat MCP server)
+- **AND** the same operation is available on the in-process Buddy path
+- **WHEN** the manifest is rendered
+- **THEN** the tool is advertised once, on the in-process path
+- **AND** a request naming the MCP-prefixed form is still routed
+
+#### Scenario: Assistant expands a summarized tool
+
+- **GIVEN** a tool the manifest listed by summary only
+- **WHEN** the assistant requests `buddy_tool_details` with that tool's name
+- **THEN** the extension answers in-process with that tool's full description and
+  exact args schema, without calling the capability registry
+- **AND** the assistant can then call the tool with correct arguments
+
+#### Scenario: Follow-up turn in a warm conversation
+
+- **GIVEN** a backend conversation that already received the tool manifest for
+  the current tool set
+- **WHEN** the user sends a follow-up turn that reuses that conversation
+- **THEN** the manifest is not re-sent
+- **AND** the turn carries only a compact refresher: the protocol rules, the tool
+  names available this turn, and how to expand a summarized tool
+
+#### Scenario: Tool set changes mid-chat
+
+- **GIVEN** a warm conversation whose manifest was sent for a different set of
+  tools (e.g. the user changed the chat's tool selection)
+- **WHEN** the next turn is assembled
+- **THEN** the full manifest is sent again for the new tool set
+
+#### Scenario: Unknown name in a details request
+
+- **GIVEN** a `buddy_tool_details` request naming a tool that is not advertised
+- **WHEN** the lookup is answered
+- **THEN** the reply states that name is unavailable and offers the closest
+  advertised names, rather than silently omitting it
+
 ### Requirement: Honor conversation type and custom instructions
 
 The system SHALL send the configured conversation type
 (`rewst-buddy.ai.conversationType`, `HELP_DOCS` or `WORKFLOW_DIAGNOSIS`) with each
 message, and SHALL prepend `rewst-buddy.ai.customInstructions` to every message
 when set. Custom instructions SHALL NOT be able to override Rewst's own system
-prompt.
+prompt. Because the instructions precede the user's own turn in the message, they
+SHALL be bounded, so an unbounded setting can never displace the request being
+answered (see `Keep every turn message within the backend's length limit`).
 
 #### Scenario: Workflow diagnosis mode
 
@@ -106,6 +231,14 @@ prompt.
 - **GIVEN** `ai.customInstructions` is set
 - **WHEN** any message is sent
 - **THEN** those instructions are prepended to the user's message
+
+#### Scenario: Oversized standing instructions
+
+- **GIVEN** `rewst-buddy.ai.customInstructions` is long enough to fill the
+  message budget on its own
+- **WHEN** a message is sent on either the stateless or the reuse path
+- **THEN** the instructions are trimmed with an explicit truncation marker
+- **AND** the user's own turn is still carried in the message
 
 ### Requirement: Control activity visibility
 
@@ -163,6 +296,15 @@ within the same extension session, and vice versa.
 - **GIVEN** an assistant response that keeps requesting tools
 - **WHEN** the number of Buddy tool rounds reaches the configured cap
 - **THEN** further tool rounds are stopped for that response
+
+#### Scenario: A catalog lookup is not Rewst tool work
+
+- **GIVEN** an assistant response that requests `buddy_tool_details`
+- **WHEN** that round contains no other Buddy tool request
+- **THEN** it does not consume a Buddy tool round from
+  `rewst-buddy.ai.maxBuddyToolRounds`
+- **AND** a response that only ever requests tool details is still stopped by its
+  own separate ceiling
 
 ### Requirement: Parse the local tool protocol defensively
 

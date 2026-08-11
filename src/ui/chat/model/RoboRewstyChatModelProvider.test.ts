@@ -2,13 +2,16 @@ import type { AskOptions, ConversationEvent, Session } from '@sessions';
 import { createMockSession, initTestEnvironment } from '@test';
 import * as assert from 'assert';
 import * as Mocha from 'mocha';
+import { MAX_CONVERSATION_MESSAGE_CHARS } from '@utils';
 import vscode from 'vscode';
+import { TOOL_DETAILS_TOOL_NAME } from '../tools/toolCatalog';
 import { parseLatestBreadcrumb } from './breadcrumb';
 import { onDidChangeContextUsage, type ContextUsage } from './contextUsage';
 import { conversationMap } from './conversationMap';
 import {
 	MAX_BUDDY_TOOL_ROUNDS,
 	MAX_NATIVE_REDIRECT_ATTEMPTS,
+	MAX_TOOL_DETAILS_ROUNDS,
 	normalizeBuddyToolRounds,
 	RoboRewstyChatModelProvider,
 	truncateArgsLabel,
@@ -1360,6 +1363,413 @@ suite('Unit: RoboRewstyChatModelProvider', () => {
 		} finally {
 			subscription.dispose();
 		}
+	});
+
+	suite('message length budget (#189)', () => {
+		// One spec sized like the real registry's heavier tools (full description +
+		// JSON args schema), so a realistic tool count reproduces the overflow that
+		// made the backend reject every turn with its 60000-character limit.
+		function fatSpec(name: string) {
+			return {
+				name,
+				description: `Does ${name} thoroughly. ${'Detailed steering prose. '.repeat(40)}`,
+				args: JSON.stringify({
+					type: 'object',
+					properties: Object.fromEntries(
+						Array.from({ length: 12 }, (_, i) => [
+							`field_${i}`,
+							{ type: 'string', description: 'a'.repeat(60) },
+						]),
+					),
+				}),
+			};
+		}
+
+		const manyBuddySpecs = Array.from({ length: 74 }, (_, i) => fatSpec(`buddy_tool_${i}`));
+
+		test('keeps the first turn under the backend message limit with a full tool registry', async () => {
+			const harness = makeHarness([completeTurn('ok')], { buddyToolSpecs: () => manyBuddySpecs });
+			await harness.run([message(User, [text('test')])]);
+
+			const sent = harness.captured[0].message;
+			assert.ok(
+				sent.length <= MAX_CONVERSATION_MESSAGE_CHARS,
+				`message was ${sent.length} chars, over the backend limit of ${MAX_CONVERSATION_MESSAGE_CHARS}`,
+			);
+		});
+
+		test('advertises overflow tools as a catalog plus the details lookup', async () => {
+			const harness = makeHarness([completeTurn('ok')], { buddyToolSpecs: () => manyBuddySpecs });
+			await harness.run([message(User, [text('test')])]);
+
+			const sent = harness.captured[0].message;
+			assert.ok(sent.includes('Tool catalog (summary only):'), 'a catalog section is sent');
+			assert.ok(sent.includes(TOOL_DETAILS_TOOL_NAME), 'the catalog expansion tool is advertised');
+			for (const spec of manyBuddySpecs) {
+				assert.ok(sent.includes(spec.name), `${spec.name} is still discoverable`);
+			}
+		});
+
+		test('answers a details request locally with the full schema of the named tools', async () => {
+			const target = manyBuddySpecs[70];
+			const harness = makeHarness(
+				[
+					completeTurn(
+						`\`\`\`vscode-tool\n{"tool": "${TOOL_DETAILS_TOOL_NAME}", "args": {"tools": ["${target.name}"]}}\n\`\`\``,
+					),
+					completeTurn('done'),
+				],
+				{
+					buddyToolSpecs: () => manyBuddySpecs,
+					runBuddyTool: async () => {
+						assert.fail('the details lookup must not reach the capability registry');
+					},
+				},
+			);
+			await harness.run([message(User, [text('test')])]);
+
+			assert.strictEqual(harness.captured.length, 2, 'the lookup feeds a follow-up turn');
+			const results = harness.captured[1].message;
+			assert.ok(results.includes(`### ${target.name}`));
+			assert.ok(results.includes(target.args), 'the exact args schema is fed back');
+		});
+
+		test('sends the manifest once per conversation, then only the compact refresher', async () => {
+			const harness = makeHarness([completeTurn('first'), completeTurn('second')], {
+				buddyToolSpecs: () => manyBuddySpecs,
+			});
+			const first = [message(User, [text('one')])];
+			await harness.run(first);
+			// Same chat, appended turn → the warm conversation is reused.
+			await harness.run([
+				...first,
+				message(Assistant, [text(visibleText(harness.parts))]),
+				message(User, [text('two')]),
+			]);
+
+			assert.strictEqual(harness.captured.length, 2);
+			const [opening, followUp] = harness.captured.map(call => call.message);
+			assert.ok(opening.includes('Tool catalog (summary only):'), 'the opening turn carries the manifest');
+			assert.ok(!followUp.includes('Tool catalog (summary only):'), 'the manifest is not re-sent');
+			assert.ok(followUp.includes('Local tool protocol reminder'), 'the refresher is sent instead');
+			assert.ok(followUp.includes('buddy_tool_0'), 'available tool names stay accurate');
+			assert.ok(
+				followUp.length < opening.length / 2,
+				`follow-up was ${followUp.length} chars vs an opening of ${opening.length}`,
+			);
+		});
+
+		test('re-sends the full manifest on the stateless retry after a reuse turn errors', async () => {
+			const harness = makeHarness(
+				[
+					completeTurn('first'),
+					// The reuse turn fails before any output → downgrade to stateless.
+					[{ kind: 'error', message: 'conversation not found' }],
+					completeTurn('second'),
+				],
+				{ buddyToolSpecs: () => manyBuddySpecs },
+			);
+			const first = [message(User, [text('one')])];
+			await harness.run(first);
+			await harness.run([
+				...first,
+				message(Assistant, [text(visibleText(harness.parts))]),
+				message(User, [text('two')]),
+			]);
+
+			assert.strictEqual(harness.captured.length, 3, 'the failed reuse turn is retried statelessly');
+			assert.ok(
+				!harness.captured[1].message.includes('Tool catalog (summary only):'),
+				'the reuse attempt used the refresher',
+			);
+			assert.ok(
+				harness.captured[2].message.includes('Tool catalog (summary only):'),
+				'the fresh conversation gets the full manifest again',
+			);
+			assert.strictEqual(harness.captured[2].conversationId, undefined, 'the retry starts a fresh conversation');
+		});
+
+		test('a tool-result turn does not count as having sent the manifest', async () => {
+			const harness = makeHarness(
+				[
+					// Round 1: the model asks for a VS Code editor tool.
+					completeTurn('```vscode-tool\n{"tool": "read_file", "args": {"path": "a.txt"}}\n```'),
+					completeTurn('answer'),
+					completeTurn('follow-up answer'),
+				],
+				{ buddyToolSpecs: () => manyBuddySpecs },
+			);
+			const tools = [{ name: 'read_file', description: 'Read a file.', inputSchema: { type: 'object' } }];
+			const first = [message(User, [text('read a.txt')])];
+			await harness.run(first, tools);
+
+			const call = harness.parts.find(
+				(part): part is vscode.LanguageModelToolCallPart => part instanceof vscode.LanguageModelToolCallPart,
+			);
+			assert.ok(call, 'an editor tool call was emitted');
+			// VS Code replays the result; that turn carries results only, no manifest.
+			await harness.run(
+				[
+					...first,
+					message(Assistant, [call]),
+					message(User, [new vscode.LanguageModelToolResultPart(call.callId, [text('file body')])]),
+				],
+				tools,
+			);
+
+			assert.strictEqual(harness.captured.length, 2);
+			const resultsTurn = harness.captured[1].message;
+			assert.ok(resultsTurn.startsWith('Tool results:'), 'the results turn carries only results');
+			assert.ok(!resultsTurn.includes('Tool catalog (summary only):'), 'no manifest rides a results turn');
+		});
+
+		test('re-sends the full manifest when the available tool set changed', async () => {
+			let specs = manyBuddySpecs;
+			const harness = makeHarness([completeTurn('first'), completeTurn('second')], {
+				buddyToolSpecs: () => specs,
+			});
+			const first = [message(User, [text('one')])];
+			await harness.run(first);
+			specs = [...manyBuddySpecs, fatSpec('buddy_newly_enabled')];
+			await harness.run([
+				...first,
+				message(Assistant, [text(visibleText(harness.parts))]),
+				message(User, [text('two')]),
+			]);
+
+			const followUp = harness.captured[1].message;
+			assert.ok(
+				followUp.includes('Tool catalog (summary only):'),
+				'the changed tool set is re-advertised in full',
+			);
+			assert.ok(followUp.includes('buddy_newly_enabled'), 'the new tool is advertised');
+		});
+
+		test('re-sends the full manifest when a tool keeps its name but changes its args schema', async () => {
+			// Names alone would look unchanged, so the follow-up would send the refresher
+			// while the conversation still held the old schema.
+			const original = fatSpec('buddy_tool_0');
+			let specs = [original, ...manyBuddySpecs.slice(1)];
+			const harness = makeHarness([completeTurn('first'), completeTurn('second')], {
+				buddyToolSpecs: () => specs,
+			});
+			const first = [message(User, [text('one')])];
+			await harness.run(first);
+
+			const changed = { ...original, args: JSON.stringify({ type: 'object', properties: { renamed: {} } }) };
+			specs = [changed, ...manyBuddySpecs.slice(1)];
+			await harness.run([
+				...first,
+				message(Assistant, [text(visibleText(harness.parts))]),
+				message(User, [text('two')]),
+			]);
+
+			const followUp = harness.captured[1].message;
+			assert.ok(followUp.includes('Tool catalog (summary only):'), 'the changed schema is re-advertised in full');
+			assert.ok(followUp.includes('renamed'), 'the new schema reaches the backend');
+		});
+
+		test('advertises a Buddy tool once when VS Code also passes it under its MCP name', async () => {
+			// With Rewst Buddy's /mcp bridge configured as a chat MCP server, VS Code
+			// hands our own tools back as mcp_<server>_buddy_x — the same operation we
+			// already run in-process, so it must not be advertised twice.
+			const harness = makeHarness([completeTurn('ok')], {
+				buddyToolSpecs: () => [fatSpec('buddy_workflow_get'), fatSpec('buddy_list_orgs')],
+			});
+			await harness.run(
+				[message(User, [text('hi')])],
+				[
+					{
+						name: 'mcp_rewst-buddy_buddy_workflow_get',
+						description: 'duplicate of the in-process tool',
+						inputSchema: { type: 'object' },
+					},
+					{ name: 'read_file', description: 'Read a file.', inputSchema: { type: 'object' } },
+				],
+			);
+
+			const sent = harness.captured[0].message;
+			assert.ok(!sent.includes('mcp_rewst-buddy_buddy_workflow_get'), 'the prefixed duplicate is not advertised');
+			assert.ok(sent.includes('buddy_workflow_get'), 'the in-process tool is advertised');
+			assert.ok(sent.includes('read_file'), 'unrelated editor tools are untouched');
+		});
+
+		test('keeps editor tools in full detail when the registry is huge', async () => {
+			const editorTools = Array.from({ length: 50 }, (_, i) => ({
+				name: `editor_tool_${i}`,
+				description: `Editor tool ${i}. ${'Copilot steering prose. '.repeat(30)}`,
+				inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+			}));
+			const harness = makeHarness([completeTurn('ok')], { buddyToolSpecs: () => manyBuddySpecs });
+			await harness.run([message(User, [text('hi')])], editorTools);
+
+			const sent = harness.captured[0].message;
+			assert.ok(sent.length <= MAX_CONVERSATION_MESSAGE_CHARS, `message was ${sent.length} chars`);
+			assert.ok(
+				sent.includes('editor_tool_0 — args: {"type":"object"'),
+				'the first editor tools keep their exact args schema',
+			);
+			for (const tool of editorTools) assert.ok(sent.includes(tool.name), `${tool.name} is discoverable`);
+			for (const spec of manyBuddySpecs) assert.ok(sent.includes(spec.name), `${spec.name} is discoverable`);
+		});
+
+		test('the protocol example names a real tool, not the details lookup with no args', async () => {
+			const harness = makeHarness([completeTurn('ok')], { buddyToolSpecs: () => manyBuddySpecs });
+			await harness.run(
+				[message(User, [text('hi')])],
+				[{ name: 'read_file', description: 'Read a file.', inputSchema: { type: 'object' } }],
+			);
+
+			const sent = harness.captured[0].message;
+			assert.ok(
+				!sent.includes(`{"tool": "${TOOL_DETAILS_TOOL_NAME}", "args": {}}`),
+				'the example is not a details call with no names',
+			);
+			assert.ok(sent.includes('{"tool": "read_file"'), 'the example uses a real tool');
+		});
+
+		test('a catalog lookup does not spend a Rewst tool round', async () => {
+			// maxBuddyToolRounds is the budget for real Rewst work; reading the manifest
+			// must not consume it, or a couple of lookups would starve the task.
+			const harness = makeHarness(
+				[
+					completeTurn(
+						`\`\`\`vscode-tool\n{"tool": "${TOOL_DETAILS_TOOL_NAME}", "args": {"tools": ["buddy_tool_5"]}}\n\`\`\``,
+					),
+					completeTurn(
+						`\`\`\`vscode-tool\n{"tool": "${TOOL_DETAILS_TOOL_NAME}", "args": {"tools": ["buddy_tool_6"]}}\n\`\`\``,
+					),
+					completeTurn('```vscode-tool\n{"tool": "buddy_tool_5", "args": {}}\n```'),
+					completeTurn('done'),
+				],
+				{
+					buddyToolSpecs: () => manyBuddySpecs,
+					aiConfig: () => ({
+						customInstructions: '',
+						conversationType: 'HELP_DOCS',
+						showActivity: true,
+						// One Rewst round only: the two lookups must still get through.
+						maxBuddyToolRounds: 1,
+					}),
+					runBuddyTool: async () => ({ text: 'real tool output', isError: false }),
+				},
+			);
+			await harness.run([message(User, [text('use tool 5')])]);
+
+			assert.strictEqual(harness.captured.length, 4, 'both lookups and the real call ran');
+			assert.ok(!visibleText(harness.parts).includes('Stopped after 1 Rewst tool call'), 'the cap did not trip');
+			assert.ok(visibleText(harness.parts).includes('done'), 'the turn reached its answer');
+		});
+
+		test('charges one round for a reply mixing a catalog lookup with a real tool call', async () => {
+			const harness = makeHarness(
+				[
+					completeTurn(
+						`\`\`\`vscode-tool\n{"tool": "${TOOL_DETAILS_TOOL_NAME}", "args": {"tools": ["buddy_tool_5"]}}\n\`\`\`\n` +
+							'```vscode-tool\n{"tool": "buddy_tool_5", "args": {"orgId": "org-1"}}\n```',
+					),
+					completeTurn('done'),
+				],
+				{
+					buddyToolSpecs: () => manyBuddySpecs,
+					aiConfig: () => ({
+						customInstructions: '',
+						conversationType: 'HELP_DOCS',
+						showActivity: true,
+						// The mixed reply may spend the one Rewst round, and no more.
+						maxBuddyToolRounds: 1,
+					}),
+					runBuddyTool: async () => ({ text: 'REAL-TOOL-OUTPUT', isError: false }),
+				},
+			);
+			await harness.run([message(User, [text('use tool 5')])]);
+
+			assert.strictEqual(harness.captured.length, 2, 'the mixed round ran and fed results back');
+			const results = harness.captured[1].message;
+			assert.ok(results.includes(manyBuddySpecs[5].args), 'the catalog details are fed back');
+			assert.ok(results.includes('REAL-TOOL-OUTPUT'), 'the real tool output is fed back');
+			assert.ok(visibleText(harness.parts).includes('done'), 'the response completes');
+			assert.ok(
+				!visibleText(harness.parts).includes('Stopped after 1 Rewst tool call'),
+				'the single charged round was enough',
+			);
+		});
+
+		test('stops a response that only ever asks for tool details', async () => {
+			const lookup = completeTurn(
+				`\`\`\`vscode-tool\n{"tool": "${TOOL_DETAILS_TOOL_NAME}", "args": {"tools": ["buddy_tool_5"]}}\n\`\`\``,
+			);
+			const harness = makeHarness([lookup], { buddyToolSpecs: () => manyBuddySpecs });
+			await harness.run([message(User, [text('hi')])]);
+
+			assert.ok(
+				visibleText(harness.parts).includes('repeated tool-detail lookups'),
+				'the details-only loop is bounded',
+			);
+			assert.ok(harness.captured.length <= MAX_TOOL_DETAILS_ROUNDS + 1, 'it stops at its own ceiling');
+		});
+
+		test('keeps a huge stateless transcript under the backend message limit', async () => {
+			const harness = makeHarness([completeTurn('ok')], { buddyToolSpecs: () => manyBuddySpecs });
+			await harness.run([
+				message(User, [text('a'.repeat(40_000))]),
+				message(Assistant, [text('b'.repeat(40_000))]),
+				message(User, [text('c'.repeat(40_000))]),
+			]);
+
+			const sent = harness.captured[0].message;
+			assert.ok(sent.length <= MAX_CONVERSATION_MESSAGE_CHARS, `message was ${sent.length} chars`);
+			assert.ok(sent.includes('c'.repeat(1_000)), 'the latest user turn survives the trim');
+		});
+
+		test('keeps the user request in the message when standing instructions are oversized', async () => {
+			// customInstructions is user-authored and unbounded, and it sits AHEAD of the
+			// question — uncapped, the transport clamp would drop the request instead.
+			const oversizedConfig = () => ({
+				customInstructions: 'x'.repeat(80_000),
+				conversationType: 'HELP_DOCS',
+				showActivity: true,
+				maxBuddyToolRounds: MAX_BUDDY_TOOL_ROUNDS,
+			});
+			const harness = makeHarness([completeTurn('first'), completeTurn('second')], {
+				buddyToolSpecs: () => manyBuddySpecs,
+				aiConfig: oversizedConfig,
+			});
+			const first = [message(User, [text('WHAT-I-ACTUALLY-ASKED')])];
+			await harness.run(first);
+			// And again on the reuse path, which assembles the turn differently.
+			await harness.run([
+				...first,
+				message(Assistant, [text(visibleText(harness.parts))]),
+				message(User, [text('SECOND-QUESTION')]),
+			]);
+
+			const [stateless, reuse] = harness.captured.map(call => call.message);
+			assert.ok(
+				stateless.length <= MAX_CONVERSATION_MESSAGE_CHARS,
+				`stateless turn was ${stateless.length} chars`,
+			);
+			assert.ok(reuse.length <= MAX_CONVERSATION_MESSAGE_CHARS, `reuse turn was ${reuse.length} chars`);
+			assert.ok(stateless.includes('WHAT-I-ACTUALLY-ASKED'), 'the stateless turn still carries the request');
+			assert.ok(reuse.includes('SECOND-QUESTION'), 'the reuse turn still carries the request');
+		});
+
+		test('keeps a huge buddy tool result under the backend message limit', async () => {
+			const harness = makeHarness(
+				[completeTurn('```vscode-tool\n{"tool": "buddy_tool_0", "args": {}}\n```'), completeTurn('done')],
+				{
+					buddyToolSpecs: () => manyBuddySpecs,
+					runBuddyTool: async () => ({ text: 'x'.repeat(200_000), isError: false }),
+				},
+			);
+			await harness.run([message(User, [text('test')])]);
+
+			assert.strictEqual(harness.captured.length, 2);
+			assert.ok(
+				harness.captured[1].message.length <= MAX_CONVERSATION_MESSAGE_CHARS,
+				`results message was ${harness.captured[1].message.length} chars`,
+			);
+		});
 	});
 
 	test('includes the working directory in context when the full overview is not sent', async () => {
