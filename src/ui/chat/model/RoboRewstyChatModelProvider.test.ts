@@ -1545,6 +1545,30 @@ suite('Unit: RoboRewstyChatModelProvider', () => {
 			assert.ok(followUp.includes('buddy_newly_enabled'), 'the new tool is advertised');
 		});
 
+		test('re-sends the full manifest when a tool keeps its name but changes its args schema', async () => {
+			// Names alone would look unchanged, so the follow-up would send the refresher
+			// while the conversation still held the old schema.
+			const original = fatSpec('buddy_tool_0');
+			let specs = [original, ...manyBuddySpecs.slice(1)];
+			const harness = makeHarness([completeTurn('first'), completeTurn('second')], {
+				buddyToolSpecs: () => specs,
+			});
+			const first = [message(User, [text('one')])];
+			await harness.run(first);
+
+			const changed = { ...original, args: JSON.stringify({ type: 'object', properties: { renamed: {} } }) };
+			specs = [changed, ...manyBuddySpecs.slice(1)];
+			await harness.run([
+				...first,
+				message(Assistant, [text(visibleText(harness.parts))]),
+				message(User, [text('two')]),
+			]);
+
+			const followUp = harness.captured[1].message;
+			assert.ok(followUp.includes('Tool catalog (summary only):'), 'the changed schema is re-advertised in full');
+			assert.ok(followUp.includes('renamed'), 'the new schema reaches the backend');
+		});
+
 		test('advertises a Buddy tool once when VS Code also passes it under its MCP name', async () => {
 			// With Rewst Buddy's /mcp bridge configured as a chat MCP server, VS Code
 			// hands our own tools back as mcp_<server>_buddy_x — the same operation we
@@ -1635,6 +1659,40 @@ suite('Unit: RoboRewstyChatModelProvider', () => {
 			assert.strictEqual(harness.captured.length, 4, 'both lookups and the real call ran');
 			assert.ok(!visibleText(harness.parts).includes('Stopped after 1 Rewst tool call'), 'the cap did not trip');
 			assert.ok(visibleText(harness.parts).includes('done'), 'the turn reached its answer');
+		});
+
+		test('charges one round for a reply mixing a catalog lookup with a real tool call', async () => {
+			const harness = makeHarness(
+				[
+					completeTurn(
+						`\`\`\`vscode-tool\n{"tool": "${TOOL_DETAILS_TOOL_NAME}", "args": {"tools": ["buddy_tool_5"]}}\n\`\`\`\n` +
+							'```vscode-tool\n{"tool": "buddy_tool_5", "args": {"orgId": "org-1"}}\n```',
+					),
+					completeTurn('done'),
+				],
+				{
+					buddyToolSpecs: () => manyBuddySpecs,
+					aiConfig: () => ({
+						customInstructions: '',
+						conversationType: 'HELP_DOCS',
+						showActivity: true,
+						// The mixed reply may spend the one Rewst round, and no more.
+						maxBuddyToolRounds: 1,
+					}),
+					runBuddyTool: async () => ({ text: 'REAL-TOOL-OUTPUT', isError: false }),
+				},
+			);
+			await harness.run([message(User, [text('use tool 5')])]);
+
+			assert.strictEqual(harness.captured.length, 2, 'the mixed round ran and fed results back');
+			const results = harness.captured[1].message;
+			assert.ok(results.includes(manyBuddySpecs[5].args), 'the catalog details are fed back');
+			assert.ok(results.includes('REAL-TOOL-OUTPUT'), 'the real tool output is fed back');
+			assert.ok(visibleText(harness.parts).includes('done'), 'the response completes');
+			assert.ok(
+				!visibleText(harness.parts).includes('Stopped after 1 Rewst tool call'),
+				'the single charged round was enough',
+			);
 		});
 
 		test('stops a response that only ever asks for tool details', async () => {

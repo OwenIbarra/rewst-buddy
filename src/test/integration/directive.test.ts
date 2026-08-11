@@ -266,14 +266,20 @@ suite('Integration: engineering directive steering', function () {
 		console.log(`\n===== Catalog navigation reply =====\n${content}\n===================================\n`);
 
 		assert.ok(requests.length > 0, `expected a tool request, got: ${content}`);
-		// Strict on purpose: calling the summarized tool directly means the assistant
-		// guessed args the manifest never gave it, which is exactly what the catalog
-		// steering must prevent.
+		const summary = requests.map(request => `${request.tool} ${JSON.stringify(request.args)}`).join(', ');
+		// Strict on purpose: the lookup has to name the tool the assistant intends to
+		// use, and calling that summarized tool in the same reply means it guessed args
+		// the manifest never gave it — exactly what the catalog steering must prevent.
 		assert.ok(
-			requests.some(request => request.tool === TOOL_DETAILS_TOOL_NAME),
-			`expected ${TOOL_DETAILS_TOOL_NAME} to be requested before ${target}, got: ${requests
-				.map(request => request.tool)
-				.join(', ')}`,
+			requests.some(
+				request =>
+					request.tool === TOOL_DETAILS_TOOL_NAME && JSON.stringify(request.args ?? {}).includes(target),
+			),
+			`expected ${TOOL_DETAILS_TOOL_NAME} to be requested for ${target}, got: ${summary}`,
+		);
+		assert.ok(
+			!requests.some(request => request.tool === target),
+			`expected no direct call to the summarized tool ${target} before its details were read, got: ${summary}`,
 		);
 	});
 });

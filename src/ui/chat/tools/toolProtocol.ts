@@ -80,31 +80,55 @@ export const MAX_REQUESTS_PER_TURN = 5;
  * listing.
  */
 export function buildToolInstructions(specs: ToolSpec[], options: { budget?: number } = {}): string {
+	// The protocol prose around the entries has to be sent whole, so it is charged
+	// against the budget before the entries are planned — otherwise the rendered
+	// manifest overruns the budget the caller asked for by the size of this framing.
+	// Both section headers are counted (empty placeholder entries), so the estimate
+	// is an upper bound on the framing whichever tiers the plan ends up using.
+	const frameChars =
+		options.budget === undefined ? 0 : renderManifest([], [''], [''], longestName(specs), true).length;
 	// The details tool is only worth advertising when something is actually
 	// summarized, so it is planned alongside the rest and dropped again when the
 	// whole manifest fit in full.
 	const plan =
 		options.budget === undefined
 			? { detailed: specs, cataloged: [] as ToolSpec[], named: [] as ToolSpec[] }
-			: planToolManifest([TOOL_DETAILS_SPEC, ...specs], options.budget);
+			: planToolManifest([TOOL_DETAILS_SPEC, ...specs], Math.max(0, options.budget - frameChars));
 	const { cataloged, named } = plan;
 	const abbreviated = cataloged.length + named.length > 0;
 	const detailed = abbreviated ? plan.detailed : plan.detailed.filter(spec => spec.name !== TOOL_DETAILS_TOOL_NAME);
-	const lines = detailed.map(renderToolDetailEntry);
+	// A concrete tool with real arguments; the details tool called with no args
+	// would demonstrate a call that does nothing.
+	const example = detailed.find(spec => spec.name !== TOOL_DETAILS_TOOL_NAME) ?? specs[0];
+	return renderManifest(
+		detailed.map(renderToolDetailEntry),
+		cataloged.map(renderToolCatalogEntry),
+		named.map(renderToolNameEntry),
+		example?.name ?? 'read_file',
+		abbreviated,
+	);
+}
+
+/** Longest advertised name, so the framing estimate can never under-count the example line. */
+function longestName(specs: readonly ToolSpec[]): string {
+	return specs.reduce((longest, spec) => (spec.name.length > longest.length ? spec.name : longest), 'read_file');
+}
+
+function renderManifest(
+	detailLines: readonly string[],
+	catalogLines: readonly string[],
+	nameLines: readonly string[],
+	exampleTool: string,
+	abbreviated: boolean,
+): string {
 	const catalogSection = abbreviated
 		? [
 				'',
 				`The tools below are listed without their args schema. Before calling one, request \`${TOOL_DETAILS_TOOL_NAME}\` with its name to get its full description and exact args, then call it in a following reply. Never guess these tools' args.`,
-				...(cataloged.length > 0
-					? ['', 'Tool catalog (summary only):', ...cataloged.map(renderToolCatalogEntry)]
-					: []),
-				...(named.length > 0 ? ['', 'Also available (name only):', ...named.map(renderToolNameEntry)] : []),
+				...(catalogLines.length > 0 ? ['', 'Tool catalog (summary only):', ...catalogLines] : []),
+				...(nameLines.length > 0 ? ['', 'Also available (name only):', ...nameLines] : []),
 			]
 		: [];
-	// A concrete tool with real arguments; the details tool called with no args
-	// would demonstrate a call that does nothing.
-	const example = detailed.find(spec => spec.name !== TOOL_DETAILS_TOOL_NAME) ?? specs[0];
-	const exampleTool = example?.name ?? 'read_file';
 	return [
 		'---',
 		"You can use local tools supplied by the user's VS Code extension. These editor tools are NOT in your platform function-calling registry — invoking them as native tool calls will fail with an unknown-tool error. The ONLY way to call one is to write a fenced code block tagged vscode-tool in your reply text:",
@@ -117,7 +141,7 @@ export function buildToolInstructions(specs: ToolSpec[], options: { budget?: num
 		'If a native invocation of one of these names ever errors, write the vscode-tool block instead — do not fall back to a different tool.',
 		'',
 		'Available tools:',
-		...lines,
+		...detailLines,
 		...catalogSection,
 		'',
 		`Rules: when you need tool information, reply with ONLY vscode-tool blocks (up to ${MAX_REQUESTS_PER_TURN} per reply) and no other prose; the editor runs them and sends the results back to you. After receiving results you may request more tools or give your final answer. Tackle multi-step work one step per reply: for a multi-step request, give the plan first (a tool-free reply, or a todo-list tool call if one is available), then take one step (one short lead-in sentence plus its block) per following reply; a single lookup is one step, so answer it tool-first. Never guess at file contents or workspace structure when a tool can check it.`,
