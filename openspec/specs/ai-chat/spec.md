@@ -234,8 +234,8 @@ answered (see `Keep every turn message within the backend's length limit`).
 
 #### Scenario: Oversized standing instructions
 
-- **GIVEN** `ai.customInstructions` is long enough to fill the message budget on
-  its own
+- **GIVEN** `rewst-buddy.ai.customInstructions` is long enough to fill the
+  message budget on its own
 - **WHEN** a message is sent on either the stateless or the reuse path
 - **THEN** the instructions are trimmed with an explicit truncation marker
 - **AND** the user's own turn is still carried in the message

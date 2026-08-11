@@ -170,19 +170,23 @@ suite('Unit: toolProtocol', () => {
 			for (const spec of specs) assert.ok(text.includes(spec.name), `${spec.name} is discoverable`);
 		});
 
-		test('stays within budget across a range of tool-set sizes', () => {
+		test('stays within budget across a range of tool-set sizes and budgets', () => {
+			// Budgets at or below the fixed protocol framing are included: the manifest
+			// still cannot exceed what the caller asked for, even when nothing but the
+			// name floor would fit.
 			for (const count of [1, 10, 80, 200]) {
 				const specs = Array.from({ length: count }, (_, i) => ({
 					name: `buddy_tool_${i}`,
 					args: JSON.stringify({ type: 'object', properties: { a: { type: 'string' } } }),
 					description: `Does thing ${i}. ${'Long steering prose. '.repeat(20)}`,
 				}));
-				const budget = 12_000;
-				const text = buildToolInstructions(specs, { budget });
-				assert.ok(
-					text.length <= budget,
-					`instructions were ${text.length} chars for ${count} tools, budget ${budget}`,
-				);
+				for (const budget of [0, 1, 200, 2_000, 12_000]) {
+					const text = buildToolInstructions(specs, { budget });
+					assert.ok(
+						text.length <= budget,
+						`instructions were ${text.length} chars for ${count} tools, budget ${budget}`,
+					);
+				}
 			}
 		});
 

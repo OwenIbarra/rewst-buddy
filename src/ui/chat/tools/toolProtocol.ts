@@ -10,6 +10,7 @@
  * turn of the same conversation.
  */
 
+import { truncateToBudget } from '../../../utils/messageBudget';
 import {
 	planToolManifest,
 	renderToolCatalogEntry,
@@ -100,13 +101,18 @@ export function buildToolInstructions(specs: ToolSpec[], options: { budget?: num
 	// A concrete tool with real arguments; the details tool called with no args
 	// would demonstrate a call that does nothing.
 	const example = detailed.find(spec => spec.name !== TOOL_DETAILS_TOOL_NAME) ?? specs[0];
-	return renderManifest(
+	const text = renderManifest(
 		detailed.map(renderToolDetailEntry),
 		cataloged.map(renderToolCatalogEntry),
 		named.map(renderToolNameEntry),
 		example?.name ?? 'read_file',
 		abbreviated,
 	);
+	// A budget below the framing plus the name-only floor cannot hold the manifest:
+	// planToolManifest still lists every tool (an unlisted tool is an uncallable
+	// one), so the bound is held here by cutting the text rather than overrunning
+	// the budget the caller asked for.
+	return options.budget === undefined ? text : truncateToBudget(text, options.budget);
 }
 
 /** Longest advertised name, so the framing estimate can never under-count the example line. */
