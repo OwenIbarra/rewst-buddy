@@ -216,7 +216,9 @@ The system SHALL send the configured conversation type
 (`rewst-buddy.ai.conversationType`, `HELP_DOCS` or `WORKFLOW_DIAGNOSIS`) with each
 message, and SHALL prepend `rewst-buddy.ai.customInstructions` to every message
 when set. Custom instructions SHALL NOT be able to override Rewst's own system
-prompt.
+prompt. Because the instructions precede the user's own turn in the message, they
+SHALL be bounded, so an unbounded setting can never displace the request being
+answered (see `Keep every turn message within the backend's length limit`).
 
 #### Scenario: Workflow diagnosis mode
 
@@ -229,6 +231,14 @@ prompt.
 - **GIVEN** `ai.customInstructions` is set
 - **WHEN** any message is sent
 - **THEN** those instructions are prepended to the user's message
+
+#### Scenario: Oversized standing instructions
+
+- **GIVEN** `ai.customInstructions` is long enough to fill the message budget on
+  its own
+- **WHEN** a message is sent on either the stateless or the reuse path
+- **THEN** the instructions are trimmed with an explicit truncation marker
+- **AND** the user's own turn is still carried in the message
 
 ### Requirement: Control activity visibility
 

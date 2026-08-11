@@ -1664,6 +1664,38 @@ suite('Unit: RoboRewstyChatModelProvider', () => {
 			assert.ok(sent.includes('c'.repeat(1_000)), 'the latest user turn survives the trim');
 		});
 
+		test('keeps the user request in the message when standing instructions are oversized', async () => {
+			// customInstructions is user-authored and unbounded, and it sits AHEAD of the
+			// question — uncapped, the transport clamp would drop the request instead.
+			const oversizedConfig = () => ({
+				customInstructions: 'x'.repeat(80_000),
+				conversationType: 'HELP_DOCS',
+				showActivity: true,
+				maxBuddyToolRounds: MAX_BUDDY_TOOL_ROUNDS,
+			});
+			const harness = makeHarness([completeTurn('first'), completeTurn('second')], {
+				buddyToolSpecs: () => manyBuddySpecs,
+				aiConfig: oversizedConfig,
+			});
+			const first = [message(User, [text('WHAT-I-ACTUALLY-ASKED')])];
+			await harness.run(first);
+			// And again on the reuse path, which assembles the turn differently.
+			await harness.run([
+				...first,
+				message(Assistant, [text(visibleText(harness.parts))]),
+				message(User, [text('SECOND-QUESTION')]),
+			]);
+
+			const [stateless, reuse] = harness.captured.map(call => call.message);
+			assert.ok(
+				stateless.length <= MAX_CONVERSATION_MESSAGE_CHARS,
+				`stateless turn was ${stateless.length} chars`,
+			);
+			assert.ok(reuse.length <= MAX_CONVERSATION_MESSAGE_CHARS, `reuse turn was ${reuse.length} chars`);
+			assert.ok(stateless.includes('WHAT-I-ACTUALLY-ASKED'), 'the stateless turn still carries the request');
+			assert.ok(reuse.includes('SECOND-QUESTION'), 'the reuse turn still carries the request');
+		});
+
 		test('keeps a huge buddy tool result under the backend message limit', async () => {
 			const harness = makeHarness(
 				[completeTurn('```vscode-tool\n{"tool": "buddy_tool_0", "args": {}}\n```'), completeTurn('done')],

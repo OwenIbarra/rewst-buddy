@@ -150,6 +150,17 @@ suite('Unit: toolCatalog', () => {
 			assert.ok(!refresher.includes(TOOL_DETAILS_TOOL_NAME), 'nothing needs expanding');
 		});
 
+		test('stays within a budget too small for its own framing', () => {
+			const specs = Array.from({ length: 40 }, (_, i) => spec(`buddy_tool_${i}`));
+			for (const budget of [0, 50, 200]) {
+				const refresher = buildToolRefresher(specs, budget);
+				assert.ok(
+					refresher.length <= budget,
+					`refresher was ${refresher.length} chars for a budget of ${budget}`,
+				);
+			}
+		});
+
 		test('cuts the name list to stay within budget, disclosing the remainder', () => {
 			const specs = Array.from({ length: 400 }, (_, i) => spec(`buddy_very_long_tool_name_${i}`));
 			const budget = 2_000;

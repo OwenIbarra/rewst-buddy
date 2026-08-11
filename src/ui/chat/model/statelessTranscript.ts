@@ -19,8 +19,11 @@ const TERMINAL_OUTPUT_FRAME =
 
 const OPEN_TAG = '<visible_chat_transcript>';
 const CLOSE_TAG = '</visible_chat_transcript>';
+// Descriptive, not authority-shaped: this rides in the user-message channel, so
+// wording that claims special standing invites the backend's prompt-injection
+// reflex (see CLAUDE.md, "AI Prompt Steering Directives").
 const TRANSCRIPT_INSTRUCTION =
-	'The user is talking from VS Code. Treat this visible transcript as the authoritative conversation context. Answer only the latest USER entry; use earlier entries only as context.';
+	'This is the visible chat transcript from VS Code, provided as conversation context. Answer the latest USER entry; earlier entries are background.';
 const ENTRY_SEPARATOR = '\n\n';
 /** Wrapper tags, instruction line and the newlines joining them to the entries. */
 const FRAME_CHARS = OPEN_TAG.length + CLOSE_TAG.length + TRANSCRIPT_INSTRUCTION.length + 4;
@@ -135,15 +138,21 @@ export function serializeVisibleChat(messages: readonly RequestMessage[], maxTot
 
 	// maxTotalChars bounds the WHOLE serialized transcript, so the wrapper tags,
 	// the fixed instruction line, the omission disclosure and the separators
-	// between entries are reserved before any entry is kept.
-	const entryBudget = Math.max(
-		0,
-		maxTotalChars - FRAME_CHARS - (entries.length - 1) * ENTRY_SEPARATOR.length - OMISSION_RESERVE,
-	);
+	// between the entries that are actually kept all count against it. Capacity is
+	// recomputed as entries are dropped — charging separators for entries that were
+	// already removed would discard more context than the budget requires.
+	const capacityFor = (kept: number, dropped: number): number =>
+		Math.max(
+			0,
+			maxTotalChars -
+				FRAME_CHARS -
+				Math.max(0, kept - 1) * ENTRY_SEPARATOR.length -
+				(dropped > 0 ? OMISSION_RESERVE : 0),
+		);
 
 	let dropped = 0;
 	let total = entries.reduce((sum, entry) => sum + entry.length, 0);
-	while (total > entryBudget && entries.length > 1) {
+	while (total > capacityFor(entries.length, dropped + 1) && entries.length > 1) {
 		const removed = entries.shift();
 		if (removed === undefined) break;
 		total -= removed.length;
@@ -151,10 +160,14 @@ export function serializeVisibleChat(messages: readonly RequestMessage[], maxTot
 	}
 	// The newest entry is kept even when it alone exceeds the budget (dropping it
 	// would discard the actual request), so trim it to fit.
-	if (total > entryBudget && entries.length === 1) {
-		entries[0] = truncateToBudget(entries[0], entryBudget);
+	const capacity = capacityFor(entries.length, dropped);
+	if (total > capacity) {
+		entries[entries.length - 1] = truncateToBudget(entries[entries.length - 1], capacity);
 	}
 
 	const omitted = dropped > 0 ? `\n(${dropped} earlier message(s) omitted)` : '';
-	return `${OPEN_TAG}\n${TRANSCRIPT_INSTRUCTION}${omitted}\n\n${entries.join(ENTRY_SEPARATOR)}\n${CLOSE_TAG}`;
+	const transcript = `${OPEN_TAG}\n${TRANSCRIPT_INSTRUCTION}${omitted}\n\n${entries.join(ENTRY_SEPARATOR)}\n${CLOSE_TAG}`;
+	// A budget smaller than the fixed envelope leaves no room even for the wrapper;
+	// the bound still holds, so the output is cut rather than overrunning it.
+	return truncateToBudget(transcript, maxTotalChars);
 }

@@ -9,7 +9,7 @@ import {
 } from '@sessions';
 import { log, TOOL_INSTRUCTIONS_BUDGET_CHARS, transcriptBudget, truncateToBudget } from '@utils';
 import vscode from 'vscode';
-import { prependInstructions } from '../promptContext';
+import { prependInstructions, standingInstructionsCost } from '../promptContext';
 import { ChunkGate } from '../tools/chunkGate';
 import { buildToolRefresher, mcpToolTail, renderToolDetails, TOOL_DETAILS_TOOL_NAME } from '../tools/toolCatalog';
 import { buildToolInstructions, stripToolRequestBlocks, type ToolResult, type ToolSpec } from '../tools/toolProtocol';
@@ -836,7 +836,9 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 		// stateless path) so a cut never lands mid-instruction.
 		const userTurn = truncateToBudget(
 			this.trailingText(messages),
-			transcriptBudget(rootLine.length + instructions.length + reminder.length + customInstructions.length),
+			transcriptBudget(
+				rootLine.length + instructions.length + reminder.length + standingInstructionsCost(customInstructions),
+			),
 		);
 		return `${prependInstructions(userTurn, customInstructions)}${rootLine}${instructions}${reminder}`;
 	}
@@ -878,7 +880,7 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 			instructions.length +
 			metadata.length +
 			rootLine.length +
-			customInstructions.length;
+			standingInstructionsCost(customInstructions);
 		let message = prependInstructions(
 			serializeVisibleChat(messages, transcriptBudget(fixedChars)),
 			customInstructions,

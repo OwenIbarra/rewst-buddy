@@ -16,6 +16,7 @@
  * both reach the backend only through this manifest.
  */
 
+import { truncateToBudget } from '../../../utils/messageBudget';
 import type { ToolSpec } from './toolProtocol';
 
 export const TOOL_DETAILS_TOOL_NAME = 'buddy_tool_details';
@@ -166,6 +167,7 @@ const REFRESHER_PROTOCOL_LINE =
  * lookup) while keeping the refresher a bounded cost.
  */
 function renderNameList(specs: readonly ToolSpec[], budget: number): string {
+	if (budget <= 0) return '';
 	const tail = (kept: number): string =>
 		`, and ${specs.length - kept} more (all callable; use ${TOOL_DETAILS_TOOL_NAME} for any name).`;
 	const tailReserve = tail(0).length;
@@ -174,7 +176,8 @@ function renderNameList(specs: readonly ToolSpec[], budget: number): string {
 	for (const spec of specs) {
 		const cost = spec.name.length + 2;
 		if (spent + cost > Math.max(0, budget - tailReserve)) {
-			return `${names.join(', ')}${tail(names.length)}`;
+			// The disclosure itself has to fit, or naming nothing is the honest output.
+			return truncateToBudget(`${names.join(', ')}${tail(names.length)}`, budget);
 		}
 		names.push(spec.name);
 		spent += cost;
@@ -203,7 +206,9 @@ export function buildToolRefresher(specs: readonly ToolSpec[], budget: number): 
 	const framing = '---'.length + REFRESHER_PROTOCOL_LINE.length + namesLabel.length + hint.length + 4;
 	const lines = ['---', REFRESHER_PROTOCOL_LINE, `${namesLabel}${renderNameList(specs, budget - framing)}`];
 	if (hint) lines.push(hint);
-	return lines.join('\n');
+	// A budget below the fixed framing cannot hold the reminder; the bound still
+	// holds, so the text is cut rather than overrunning it.
+	return truncateToBudget(lines.join('\n'), budget);
 }
 
 /** Fuzzy name suggestions for a details request that named an unknown tool. */

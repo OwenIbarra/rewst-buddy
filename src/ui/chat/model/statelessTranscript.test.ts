@@ -116,6 +116,32 @@ suite('Unit: statelessTranscript', () => {
 			assert.ok(transcript.includes('earlier message(s) omitted'), 'the drop is disclosed');
 		});
 
+		test('keeps as many short entries as the retained separators allow', () => {
+			// Capacity is recomputed as entries drop, so separators for already-dropped
+			// entries are not charged against what is kept.
+			const budget = 1_200;
+			const transcript = serializeVisibleChat(
+				Array.from({ length: 30 }, (_, i) =>
+					message(i % 2 === 0 ? User : Assistant, [text(`turn ${i} `.repeat(5))]),
+				),
+				budget,
+			);
+
+			assert.ok(transcript.length <= budget, `transcript was ${transcript.length} chars, budget ${budget}`);
+			assert.ok(transcript.includes('turn 29'), 'the latest entry survives');
+			assert.ok(transcript.includes('turn 28'), 'earlier entries are kept while capacity remains');
+		});
+
+		test('stays within a budget smaller than the wrapper itself', () => {
+			for (const budget of [0, 40, 120]) {
+				const transcript = serializeVisibleChat([message(User, [text('hello '.repeat(100))])], budget);
+				assert.ok(
+					transcript.length <= budget,
+					`transcript was ${transcript.length} chars for a budget of ${budget}`,
+				);
+			}
+		});
+
 		test('truncates the newest entry when it alone overruns the budget', () => {
 			const budget = 3_000;
 			const transcript = serializeVisibleChat([message(User, [text('c'.repeat(20_000))])], budget);
