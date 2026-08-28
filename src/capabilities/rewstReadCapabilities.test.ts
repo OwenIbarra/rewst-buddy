@@ -178,6 +178,22 @@ suite('Unit: rewstReadCapabilities', () => {
 		);
 	});
 
+	test('buddy_resolve_reference forwards the current schema valueIn filter and validates ids', async () => {
+		const { session, wrapper } = createMockSession({ profile: { org: { id: 'org-1', name: 'Acme' } } });
+		useRawGraphqlWrapper(session, wrapper);
+		wrapper.when('rawGraphql', { data: { data: { localReferenceOptions: [] } } });
+		const capability = getCapability('buddy_resolve_reference')!;
+		const ctx = { session, orgId: 'org-1', sessions: [session] };
+		await capability.run({ orgId: 'org-1', modelType: 'Form', valueIn: ['form-1'] }, ctx);
+		const calls = wrapper.getCallsFor('rawGraphql');
+		assert.deepStrictEqual(calls[0].variables.variables.valueIn, ['form-1']);
+		assert.match(calls[0].variables.query, /valueIn:\s*\$valueIn/);
+		for (const valueIn of [[], [''], [42], 'form-1']) {
+			await assert.rejects(() => capability.run({ orgId: 'org-1', modelType: 'Form', valueIn }, ctx));
+		}
+		assert.strictEqual(wrapper.getCallsFor('rawGraphql').length, 1);
+	});
+
 	test('buddy_find_executions_by_variable scans conductor input and matches name and value', async () => {
 		const { session, wrapper } = createMockSession({ profile: { org: { id: 'org-1', name: 'Acme' } } });
 		useRawGraphqlWrapper(session, wrapper);
