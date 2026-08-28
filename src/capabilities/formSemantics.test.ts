@@ -384,6 +384,20 @@ suite('Unit: formSemantics validator', () => {
 		assert.strictEqual(report.errors[0].code, 'input_from_field_unknown_source');
 		assert.strictEqual(fields.length, 1);
 	});
+
+	test('does not report a generator mapping check as passed when compilation finds an unknown source', () => {
+		const { report } = buildFormSemantics({
+			typedFields: [
+				parseTyped({
+					name: 'device',
+					type: 'SELECT',
+					dynamicOptions: { workflowId: 'wf', inputFromFields: { site: 'ghost' } },
+				}),
+			],
+		});
+		assert.ok(!report.passedChecks.includes('generator_mappings_reference_known_fields'));
+		assert.ok(!report.fields[0].passedChecks.includes('generator_mappings_reference_known_fields'));
+	});
 });
 
 suite('Unit: formSemantics field-level reporting', () => {

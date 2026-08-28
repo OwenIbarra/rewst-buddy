@@ -237,6 +237,33 @@ suite('Unit: triggerCreateCapability', () => {
 		);
 	});
 
+	for (const [field, value] of [
+		['triggerTypeId', 'tt-hook'],
+		['triggerTypeRef', 'rewst:webhook'],
+	] as const) {
+		test(`rejects an explicit non-form ${field} when formId is supplied`, async () => {
+			setMcpMutationApprover(async () =>
+				assert.fail('an incompatible form trigger type must not reach approval'),
+			);
+			const { ctx, calls } = sequencedCtx([workflowOwner, formOwner, triggerTypes([formType, webhookType])]);
+			await assert.rejects(
+				() =>
+					cap('buddy_create_trigger').run(
+						{
+							orgId: 'org-1',
+							workflowId: 'wf',
+							name: 'Submit',
+							formId: 'form-1',
+							[field]: value,
+						},
+						ctx,
+					),
+				/form submission trigger type/,
+			);
+			assert.ok(calls.every(call => !call.query.startsWith('mutation')));
+		});
+	}
+
 	test('reports a saved trigger whose form association did not persist, without implying a rollback', async () => {
 		setMcpMutationApprover(async () => true);
 		const { ctx } = sequencedCtx([

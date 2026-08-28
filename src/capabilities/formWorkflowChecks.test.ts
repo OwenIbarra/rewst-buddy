@@ -235,6 +235,67 @@ suite('Unit: formWorkflowChecks over a field list', () => {
 		assert.ok(report.passedChecks.includes('generator_trigger_resolved'));
 	});
 
+	test('checks distinct generators concurrently and preserves reference-order diagnostics', async () => {
+		const fields = [dynamicField('first', 'wf-first'), dynamicField('second', 'wf-second')];
+		let releaseFirst: (() => void) | undefined;
+		const firstStarted = new Promise<void>(resolve => {
+			releaseFirst = resolve;
+		});
+		let secondStarted!: () => void;
+		const secondCallStarted = new Promise<void>(resolve => {
+			secondStarted = resolve;
+		});
+		let calls = 0;
+		const session = {
+			rawGraphql: async (_query: string, variables?: Record<string, unknown>) => {
+				calls++;
+				if (variables?.id === 'wf-first') await firstStarted;
+				if (variables?.id === 'wf-second') secondStarted();
+				return { data: { workflow: null } };
+			},
+		} as unknown as Session;
+		const checking = applyGeneratorChecks({
+			session,
+			orgId: 'org-1',
+			fields,
+			report: validateFormFields(fields),
+		});
+		await secondCallStarted;
+		assert.strictEqual(calls, 2, 'both distinct generator checks begin before either completes');
+		releaseFirst?.();
+		const { report } = await checking;
+		assert.deepStrictEqual(
+			report.errors.map(error => error.path),
+			['fields[0].schema.enumSourceWorkflow', 'fields[1].schema.enumSourceWorkflow'],
+		);
+	});
+
+	test('rebases cached warnings onto each later field, including a triggerId suffix', async () => {
+		const fields = [dynamicField('first', 'wf', 'trg'), dynamicField('second', 'wf', 'trg')];
+		delete (fields[1].schema as Record<string, unknown>).name;
+		const { session, calls } = sessionFor({
+			wf: {
+				...generator,
+				input: ['tenant_id'],
+				triggers: [{ id: 'trg', name: 'Options', enabled: false, orgId: 'org-1', workflowId: 'wf' }],
+			},
+		});
+		const { report } = await applyGeneratorChecks({
+			session,
+			orgId: 'org-1',
+			fields,
+			report: validateFormFields(fields),
+		});
+		assert.strictEqual(calls.length, 1);
+		assert.deepStrictEqual(
+			report.fields[1].warnings.map(warning => [warning.code, warning.path, warning.fieldName]),
+			[
+				['generator_input_not_supplied', 'fields[1].schema.enumSourceWorkflow', undefined],
+				['generator_trigger_disabled', 'fields[1].schema.enumSourceWorkflow.triggerId', undefined],
+			],
+		);
+	});
+
 	test('a broken generator fails the form report and names the offending field', async () => {
 		const fields = [dynamicField('a', 'missing')];
 		const { session } = sessionFor({});

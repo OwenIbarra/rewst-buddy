@@ -203,7 +203,7 @@ With write tools enabled and the organization in working scope:
 | `buddy_add_form_field`    | Add one field to an existing form, leaving every other field untouched.                                                 |
 | `buddy_delete_form`       | Permanently delete the form after fresh approval.                                                                       |
 | `buddy_set_form_tags`     | Add/remove tags while retaining others, or replace the exact set. `tagIds: []` with `operation: "replace"` clears tags. |
-| `buddy_test_form_options` | Run an option-generator workflow once and report the options it actually produced.                                      |
+| `buddy_test_form_options` | Run an option-generator workflow once and report the option count, observed key names, and label/value-key checks.      |
 | `buddy_create_trigger`    | Create the trigger that submits a form, or that an option generator is invoked through.                                 |
 
 **Field replacement is destructive:** when updating `fields`, send the complete
@@ -233,12 +233,8 @@ workflow input name), its `type`, and optional `label`, `description`,
 `dynamicOptions`. Fields reference each other by `name`; the compiler resolves
 those to the field IDs Rewst stores.
 
-Field IDs are Rewst UUIDs. You do not supply them: a typed field is created
-without an ID unless another field references it, in which case a UUID is minted
-so the reference has something to point at. Passing a readable ID such as
-`field_first_name` is rejected up front — Rewst stores field IDs in a UUID
-column and inserts the supplied value directly, so a slug fails the write. When
-editing an existing field, use the ID from `buddy_get_form`.
+Field IDs must be Rewst UUIDs. New fields may omit an ID. When editing an
+existing field, reuse the ID returned by `buddy_get_form`.
 
 `dynamicOptions` is the workflow-generated dropdown: `workflowId`, an optional
 `triggerId`, optional `labelKey`/`valueKey` (default `label`/`value`), static

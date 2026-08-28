@@ -1,12 +1,12 @@
-# GraphQL schema and MCP tool audit — 2026-08-27
+# Internal GraphQL schema and MCP tool audit — 2026-08-27
 
 ## Scope and evidence
 
 This audit addresses [issue #193: No Form Tools in MCP](https://github.com/totallynotjon/rewst-buddy/issues/193).
 It compares the schema at commit `f7fb7c0` with fresh introspection from
-`https://api.rewst.io/graphql`. The refreshed committed schema matches that
-introspection after lexicographic normalization. The generated SDK was refreshed
-from the same snapshot. Testing ran on August 27 local time / August 28 UTC.
+`https://api.rewst.io/graphql`. The refreshed schema and generated SDK are
+committed in `1253fca`, which records their refresh from the same snapshot.
+Testing ran on August 27 local time / August 28 UTC.
 
 Schema compatibility, tool coverage and live resolver behavior are separate
 claims. This is **not** a claim that every root operation was executed. Live
@@ -143,23 +143,26 @@ npm run test:unit
 npm run package
 ```
 
-The live suite supports the normal .env.example Rewst session-token setup, or
-an optional existing local Buddy MCP host:
+The live suite supports the normal `.env.example` Rewst session-token setup, or
+an optional existing local Buddy MCP host exposed through trusted HTTPS on
+loopback:
 
 ```sh
-export REWST_TEST_MCP_URL=http://127.0.0.1:27122/mcp
+export REWST_TEST_MCP_URL='https://127.0.0.1:<trusted-tls-port>/mcp'
 export REWST_TEST_ORG_ID='<your explicitly selected sandbox org id>'
 # Supply REWST_TEST_MCP_TOKEN through a local secret mechanism; never commit it.
 export REWST_TEST_WRITE=1
-npm run test:grep:integration -- 'Integration: form CRUD tools'
+env -u REWST_TEST_TOKEN npm run test:grep:integration -- 'Integration: form CRUD tools'
 ```
 
 For the MCP route, the existing host must already be authenticated, permit the
 sandbox in working scope, and have write tools and dangerous GraphQL mutations
-enabled by the user. Approve mutations in that host's VS Code UI. The adapter
-supports rawGraphql only, connects to loopback HTTP with redirects disabled, and
-verifies the selected org resolves to a sandbox. It never copies a Rewst session
-cookie or changes the running host's settings.
+enabled by the user. It must use trusted TLS: the test client rejects HTTP bearer
+endpoints, including loopback, and TLS checks must not be disabled. Approve
+mutations in that host's VS Code UI. The adapter supports rawGraphql only,
+connects to HTTPS loopback with redirects disabled, and verifies the selected org
+resolves to a sandbox. It never copies a Rewst session cookie or changes the
+running host's settings.
 
 The isolated test host uses its normal test approver; the **existing host still
 enforces real approvals** on forwarded requests. This tests the latest capability
@@ -238,9 +241,9 @@ counts are reported.
 
 ### Not verified — external blocker
 
-**The live sandbox lifecycle did not run in this environment.** There is no
-`.env` and no `REWST_TEST_TOKEN` or `REWST_TEST_MCP_URL`, so all 97 integration
-tests report as pending, including the new one. The lifecycle test exists and is
+**The live sandbox lifecycle did not run in this environment.** Test credentials
+were unavailable, so the integration suite remains pending, including the new
+one. The lifecycle test exists and is
 written to run against an explicitly selected sandbox — it creates an inert
 `OPTION_GENERATOR` whose `options` output is a Jinja literal of two synthetic
 values (no integration, tenant or user data), a trigger for it, a form with a
@@ -263,10 +266,9 @@ form-submission type exists. Also still unverified: rendering the resulting form
 in a signed-in browser, and the MCP catalogue as seen by an external client
 after installing and reloading this build.
 
-`npm run codegen:check` reports out of sync in this working tree because it
-compares the generated SDK against `main`, and the refreshed schema and SDK from
-the earlier pass are not committed yet. Codegen itself is deterministic here:
-running it twice produced a byte-identical `generated/graphql.ts`.
+`npm run codegen:check` verifies the committed generated SDK against the committed
+schema. The schema and generated SDK were both committed in `1253fca`; this audit
+does not claim that the check was run after subsequent changes.
 
 ### Interpretation and remaining limits
 

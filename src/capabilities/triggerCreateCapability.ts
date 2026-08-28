@@ -237,6 +237,11 @@ async function runCreateTrigger(input: Record<string, unknown>, ctx: CapabilityC
 		triggerTypeRef: parsed.triggerTypeRef,
 		forForm: parsed.formId !== undefined,
 	});
+	if (parsed.formId && !isFormSubmissionType(triggerType)) {
+		throw new Error(
+			`Trigger type ${describeTriggerType(triggerType)} is not a form submission trigger type and cannot be used with formId.`,
+		);
+	}
 
 	// A form trigger stores its form twice: as the relation (`formId`) and inside
 	// the type's parameters (`form_id`). Rewst reads them in different places, so

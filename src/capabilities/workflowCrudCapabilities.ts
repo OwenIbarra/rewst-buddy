@@ -14,6 +14,7 @@ import {
 	toInputSchema,
 } from './inputHelpers';
 import { orgDisplayName, withMutationApproval } from './mutationApproval';
+import { OPTIONS_OUTPUT_NAME } from './formWorkflowChecks';
 
 /**
  * Workflow create/delete capabilities. buddy_create_workflow makes an empty workflow
@@ -63,13 +64,6 @@ async function requireWorkflowInOrg(ctx: CapabilityContext, workflowId: string, 
 	});
 }
 
-/**
- * Output name a form dropdown reads its choices from. An OPTION_GENERATOR that
- * declares no `options` output can never populate a field, so creating one
- * without it is rejected here rather than discovered later in an empty dropdown.
- */
-const OPTIONS_OUTPUT_NAME = 'options';
-
 const workflowOutputSchema = z.strictObject({
 	name: z
 		.string()
@@ -79,7 +73,7 @@ const workflowOutputSchema = z.strictObject({
 	value: z
 		.string()
 		.describe(
-			'Jinja expression producing the value, e.g. "{{ CTX.option_list }}". An empty string leaves it unset.',
+			'Jinja expression producing the value, e.g. "{{ CTX.option_list }}". An empty string is stored as an empty expression.',
 		),
 });
 

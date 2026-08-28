@@ -26,6 +26,7 @@ export const vitestSuites = [
 	'src/ui/chat/tools/toolCatalog.test.ts',
 	'src/utils/messageBudget.test.ts',
 	'src/test/tdd.test.ts',
+	'src/test/helpers/mcpTestSession.test.ts',
 	'src/sessions/graphql/sdk.test.ts',
 	'src/sessions/graphql/documents.schemaParity.test.ts',
 	'src/ui/jinja/jinjaPreviewRender.test.ts',

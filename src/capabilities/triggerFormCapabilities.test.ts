@@ -107,6 +107,7 @@ suite('Unit: triggerFormCapabilities', () => {
 		const output = await cap('buddy_list_forms').run({ orgId: 'org-1', limit: 25 }, ctx);
 
 		assert.ok(calls[0].query.includes('forms('));
+		assert.match(calls[0].query, /order:\s*\[\["name","ASC"\],\["id","ASC"\]\]/);
 		assert.ok(output.includes('Client intake (form-1)'));
 	});
 

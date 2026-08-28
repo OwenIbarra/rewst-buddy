@@ -15,6 +15,9 @@ function sequencedCtx(responses: unknown[]) {
 	const session = {
 		rawGraphql: async (query: string, variables?: Record<string, unknown>) => {
 			calls.push({ query, variables });
+			if (index >= responses.length) {
+				throw new Error(`Unexpected extra GraphQL call ${index + 1}: ${query}`);
+			}
 			return responses[index++] as { data?: unknown; errors?: unknown };
 		},
 		profile: {
@@ -377,8 +380,10 @@ suite('Unit: formCapabilities', () => {
 
 	test('field replacement always requests fresh approval, even after a metadata update', async () => {
 		let approvals = 0;
-		setMcpMutationApprover(async () => {
+		const summaries: string[] = [];
+		setMcpMutationApprover(async (_scope, summary) => {
 			approvals++;
+			summaries.push(summary);
 			return true;
 		});
 		for (const change of [{ name: 'Renamed' }, { fields: [] }]) {
@@ -390,6 +395,15 @@ suite('Unit: formCapabilities', () => {
 			await cap('buddy_update_form').run({ orgId: 'org-1', formId: 'form-1', ...change }, ctx);
 		}
 		assert.strictEqual(approvals, 2);
+		assert.match(summaries[1], /replace fields with 0 definitions/);
+	});
+
+	test('sequenced contexts identify an unexpected extra GraphQL call', async () => {
+		const { ctx } = sequencedCtx([]);
+		await assert.rejects(
+			() => (ctx.session as Session).rawGraphql('query UnexpectedExtraCall { forms { id } }'),
+			/Unexpected extra GraphQL call 1: query UnexpectedExtraCall/,
+		);
 	});
 
 	test('get returns fields in index order and verifies the returned id', async () => {

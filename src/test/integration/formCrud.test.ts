@@ -103,6 +103,7 @@ suite('Integration: form CRUD tools', function () {
 		const name = `rb-form-itest-${stamp}`;
 		let id: string | undefined;
 		let tagId: string | undefined;
+		let bodyFailed = false;
 
 		const byId = async (formId: string) => {
 			const { data, errors } = await session.rawGraphql(BY_ID, { orgId: targetOrgId, id: formId });
@@ -195,6 +196,9 @@ suite('Integration: form CRUD tools', function () {
 			assert.strictEqual(deleted.status, 'deleted');
 			assert.strictEqual(await byId(created.id), null);
 			id = undefined;
+		} catch (error) {
+			bodyFailed = true;
+			throw error;
 		} finally {
 			const errors: unknown[] = [];
 			if (id) {
@@ -213,7 +217,8 @@ suite('Integration: form CRUD tools', function () {
 					console.error(`Tag cleanup failed; delete test tag ${tagId} in org ${targetOrgId}.`);
 				}
 			}
-			assert.strictEqual(errors.length, 0, `Fixture cleanup failed: ${errors.map(String).join('; ')}`);
+			if (!bodyFailed)
+				assert.strictEqual(errors.length, 0, `Fixture cleanup failed: ${errors.map(String).join('; ')}`);
 		}
 	});
 
@@ -225,6 +230,7 @@ suite('Integration: form CRUD tools', function () {
 		let formId: string | undefined;
 		let submitTriggerId: string | undefined;
 		let submitWorkflowId: string | undefined;
+		let bodyFailed = false;
 
 		try {
 			// 1. An OPTION_GENERATOR workflow declaring its inputs and options output.
@@ -360,6 +366,9 @@ suite('Integration: form CRUD tools', function () {
 				withTrigger.triggers.some((trigger: { id: string }) => trigger.id === submitTriggerId),
 				'the form reports its new submission trigger',
 			);
+		} catch (error) {
+			bodyFailed = true;
+			throw error;
 		} finally {
 			const errors: unknown[] = [];
 			const cleanup = async (label: string, mutation: string, id: string | undefined) => {
@@ -378,7 +387,8 @@ suite('Integration: form CRUD tools', function () {
 			await cleanup('Form', DELETE, formId);
 			await cleanup('Generator workflow', DELETE_WORKFLOW, workflowId);
 			await cleanup('Submit target workflow', DELETE_WORKFLOW, submitWorkflowId);
-			assert.strictEqual(errors.length, 0, `Fixture cleanup failed: ${errors.map(String).join('; ')}`);
+			if (!bodyFailed)
+				assert.strictEqual(errors.length, 0, `Fixture cleanup failed: ${errors.map(String).join('; ')}`);
 		}
 	});
 });

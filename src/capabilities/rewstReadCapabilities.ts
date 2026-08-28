@@ -233,7 +233,7 @@ const resolveReferenceInputSchema = z.object({
 		.optional()
 		.describe('Optional exact reference ids to resolve to labels (up to 100), including form field selections.'),
 	limit: optionalClampedInt(MAX_REFERENCE_LIMIT).describe(
-		`Max references to return (default ${DEFAULT_REFERENCE_LIMIT}, max ${MAX_REFERENCE_LIMIT}).`,
+		`Max references to return (default ${DEFAULT_REFERENCE_LIMIT}, or the number of valueIn ids when valueIn is supplied; max ${MAX_REFERENCE_LIMIT}).`,
 	),
 });
 const resolveReferenceSpec: ToolSpec = {
@@ -698,7 +698,7 @@ async function runResolveReference(input: Record<string, unknown>, ctx: Capabili
 		valueIn,
 		limit: rawLimit,
 	} = parseCapabilityInput(resolveReferenceInputSchema, input);
-	const limit = rawLimit ?? DEFAULT_REFERENCE_LIMIT;
+	const limit = rawLimit ?? valueIn?.length ?? DEFAULT_REFERENCE_LIMIT;
 	const variables: Record<string, unknown> = { orgId, modelName: modelType, limit };
 	if (search) variables.search = search;
 	if (valueIn !== undefined) variables.valueIn = valueIn;

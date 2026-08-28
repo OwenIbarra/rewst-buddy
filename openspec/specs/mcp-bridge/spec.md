@@ -1546,12 +1546,31 @@ is surfaced rather than hidden.
 - **THEN** the field is not reported as changed — only a genuine value change
   appears in the diff
 
+### Requirement: Resolve selected reference values
+
+`buddy_resolve_reference` SHALL accept an optional `valueIn` list to resolve
+specified reference ids. When `valueIn` is supplied and `limit` is omitted, the
+effective limit SHALL equal the number of supplied ids. Without `valueIn`, the
+default limit SHALL remain 25. An explicitly supplied valid limit SHALL take
+precedence in either case.
+
+#### Scenario: Resolve more selected ids than the ordinary default
+
+- **WHEN** `buddy_resolve_reference` receives a `valueIn` list longer than 25 and
+  no limit
+- **THEN** the request SHALL use the list length as its limit
+- **WHEN** it receives no `valueIn` and no limit
+- **THEN** it SHALL use the default limit of 25
+- **WHEN** it receives an explicit valid limit
+- **THEN** it SHALL use that limit
+
 ### Requirement: Dedicated form CRUD tools
 
 The system SHALL expose dedicated form tools for reading, creating, updating,
 and deleting forms without requiring callers to compose arbitrary GraphQL.
 `buddy_list_forms` SHALL accept an optional case-insensitive name search and
-non-negative offset with deterministic name/id ordering.
+non-negative offset, and SHALL order results by name ascending and then id
+ascending.
 `buddy_get_form` SHALL return form metadata together with fields, field
 conditions, tags, and connected triggers. `buddy_create_form` and
 `buddy_update_form` SHALL accept Rewst form-field definitions, including field
@@ -1575,6 +1594,12 @@ request, matching the live resolver's storage constraint.
 - **WHEN** `buddy_list_forms` is called with a name search
 - **THEN** the query SHALL remain constrained to the requested organization
 - **AND** SHALL return only forms whose names match case-insensitively
+
+#### Scenario: List forms in deterministic order
+
+- **WHEN** `buddy_list_forms` is called with search and offset arguments
+- **THEN** its request SHALL retain those arguments
+- **AND** SHALL request name ascending followed by id ascending ordering
 
 #### Scenario: Read a complete form definition
 
@@ -1636,7 +1661,8 @@ Rewst metadata the system does not model is never silently discarded.
 Validation SHALL cover field names, field ids, field types, conditions,
 generator references and field dependency cycles, and SHALL report errors,
 warnings, the checks that passed, and the checks that could not be run, both per
-field and overall.
+field and overall. A check that later produces a compiler error SHALL NOT remain
+reported as passed.
 
 #### Scenario: Compile a workflow-generated dropdown
 
@@ -1705,7 +1731,10 @@ organization or to be explicitly shared with it; membership of a parent
 organization SHALL NOT by itself be treated as visibility. A trigger the field
 names SHALL be verified to belong to that workflow and to a compatible owner.
 An omitted trigger SHALL be resolved only when exactly one compatible choice
-exists; otherwise the system SHALL report the candidates.
+exists; otherwise the system SHALL report the candidates. Distinct generator
+references MAY be resolved concurrently, but their diagnostics SHALL remain in
+form-reference order and SHALL be attributed to the referenced field's input
+path, retaining a `.triggerId` suffix when that is the failing value.
 
 #### Scenario: Reject a workflow that cannot generate options
 
@@ -1715,6 +1744,15 @@ exists; otherwise the system SHALL report the candidates.
 - **THEN** the check SHALL fail with a message naming the workflow and the reason
 - **AND** the checks that could not be evaluated as a result SHALL be reported as
   not run, rather than omitted or reported as passed
+
+#### Scenario: Preserve per-field diagnostic paths and order
+
+- **GIVEN** multiple fields reference generators, including duplicate references
+- **WHEN** live generator checks return an error or warning for a later field
+- **THEN** that diagnostic SHALL name the later field's input path, including
+  `.triggerId` when applicable
+- **AND** results SHALL remain ordered by the form's references even when checks
+  are resolved concurrently
 
 #### Scenario: Resolve an omitted generator trigger
 
@@ -1869,6 +1907,8 @@ any named form SHALL be verified to belong to the requested organization before
 approval. When a form is named, the trigger's `formId` and its
 `parameters.form_id` SHALL be kept consistent and a contradictory caller-supplied
 value SHALL be rejected; required criteria SHALL default to an evaluable value.
+Any explicitly supplied trigger type that resolves to a non-form trigger type
+SHALL be rejected before approval or mutation when `formId` is supplied.
 The saved trigger SHALL be read back to confirm its workflow, form association
 and enabled state. A new trigger SHALL default to disabled, and enabling it SHALL
 be stated in the approval prompt. Editing an existing trigger SHALL continue to
@@ -1886,6 +1926,12 @@ use the dedicated trigger tools with their patch and diff safeguards.
 
 - **WHEN** `parameters.form_id` names a different form from `formId`
 - **THEN** the request SHALL be rejected before approval
+
+#### Scenario: Reject an explicit non-form trigger type for a form
+
+- **WHEN** `buddy_create_trigger` receives `formId` and an explicit
+  `triggerTypeId` or `triggerTypeRef` that resolves to a non-form trigger type
+- **THEN** the request SHALL be rejected before approval or mutation
 
 #### Scenario: Ambiguous or unknown trigger type
 

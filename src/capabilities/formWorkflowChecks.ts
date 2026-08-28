@@ -381,35 +381,64 @@ export async function applyGeneratorChecks(opts: {
 	}
 
 	const resolutions: GeneratorResolution[] = [];
-	const byWorkflow = new Map<string, GeneratorResolution>();
+	const referencesByKey = new Map<string, GeneratorReference>();
 	for (const reference of references) {
 		// One fetch per (workflow, trigger, mapped-input) shape: the same workflow
 		// referenced identically twice cannot produce different findings.
 		const key = `${reference.workflowId}|${reference.triggerId ?? ''}|${[...reference.mappedInputs].sort().join(',')}`;
-		let resolution = byWorkflow.get(key);
-		if (!resolution) {
-			resolution = await checkGeneratorWorkflow({
-				session: opts.session,
-				orgId: opts.orgId,
-				workflowId: reference.workflowId,
-				mappedInputs: reference.mappedInputs,
-				requestedTriggerId: reference.triggerId,
-				path: reference.path,
-				fieldName: reference.fieldName,
-			});
-			byWorkflow.set(key, resolution);
-		}
-		resolutions.push({ ...resolution, path: reference.path });
+		if (!referencesByKey.has(key)) referencesByKey.set(key, reference);
+	}
+	const checked = await Promise.all(
+		[...referencesByKey.entries()].map(
+			async ([key, reference]) =>
+				[
+					key,
+					await checkGeneratorWorkflow({
+						session: opts.session,
+						orgId: opts.orgId,
+						workflowId: reference.workflowId,
+						mappedInputs: reference.mappedInputs,
+						requestedTriggerId: reference.triggerId,
+						path: reference.path,
+						fieldName: reference.fieldName,
+					}),
+				] as const,
+		),
+	);
+	const byWorkflow = new Map(checked);
+	const rebasePath = (
+		diagnostic: FormDiagnostic,
+		resolution: GeneratorResolution,
+		reference: GeneratorReference,
+	): string =>
+		diagnostic.path === resolution.path || diagnostic.path.startsWith(`${resolution.path}.`)
+			? `${reference.path}${diagnostic.path.slice(resolution.path.length)}`
+			: reference.path;
+	for (const reference of references) {
+		const key = `${reference.workflowId}|${reference.triggerId ?? ''}|${[...reference.mappedInputs].sort().join(',')}`;
+		const resolution = byWorkflow.get(key)!;
+		const rebaseDiagnostic = (diagnostic: FormDiagnostic): FormDiagnostic => ({
+			...diagnostic,
+			path: rebasePath(diagnostic, resolution, reference),
+			fieldName: reference.fieldName,
+		});
+		const rebased = {
+			...resolution,
+			path: reference.path,
+			errors: resolution.errors.map(rebaseDiagnostic),
+			warnings: resolution.warnings.map(rebaseDiagnostic),
+		};
+		resolutions.push(rebased);
 		const fieldReport = report.fields[reference.fieldIndex];
 		if (fieldReport) {
-			fieldReport.errors.push(...resolution.errors.map(error => ({ ...error, path: reference.path })));
-			fieldReport.warnings.push(...resolution.warnings.map(warning => ({ ...warning, path: warning.path })));
+			fieldReport.errors.push(...rebased.errors);
+			fieldReport.warnings.push(...rebased.warnings);
 			for (const check of resolution.passedChecks) {
 				if (!fieldReport.passedChecks.includes(check)) fieldReport.passedChecks.push(check);
 			}
 		} else {
-			report.errors.push(...resolution.errors);
-			report.warnings.push(...resolution.warnings);
+			report.errors.push(...rebased.errors);
+			report.warnings.push(...rebased.warnings);
 		}
 		report.checksNotRun = [...report.checksNotRun, ...resolution.checksNotRun];
 	}

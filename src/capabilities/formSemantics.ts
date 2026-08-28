@@ -952,6 +952,18 @@ export function buildFormSemantics(input: {
 	}
 	report.errors = [...compilerDiagnostics.filter(d => d.severity === 'error'), ...report.errors];
 	report.warnings = [...compilerDiagnostics.filter(d => d.severity === 'warning'), ...report.warnings];
+	// The pure validator calculated these before compiler diagnostics were
+	// attached. Remove checks whose compiler errors now prove they did not pass.
+	for (const fieldReport of report.fields) {
+		const failedCodes = new Set(fieldReport.errors.map(error => error.code));
+		fieldReport.passedChecks = fieldReport.passedChecks.filter(
+			check => !CHECK_CODES[check as (typeof PURE_CHECKS)[number]].some(code => failedCodes.has(code)),
+		);
+	}
+	const failedCodes = new Set(report.errors.map(error => error.code));
+	report.passedChecks = report.passedChecks.filter(
+		check => !CHECK_CODES[check as (typeof PURE_CHECKS)[number]].some(code => failedCodes.has(code)),
+	);
 	report.ok = report.errors.length === 0;
 	return { fields, report };
 }

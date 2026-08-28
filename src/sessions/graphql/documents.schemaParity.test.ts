@@ -1,5 +1,5 @@
 import * as assert from 'node:assert';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { buildSchema, parse, validate } from 'graphql';
 import ts from 'typescript';
@@ -7,12 +7,13 @@ import { suite, test } from '../../test/tdd';
 
 const SOURCE_ROOTS = ['src'];
 
-function sourceFiles(root: string): string[] {
-	const entries = readdirSync(root, { withFileTypes: true });
+async function sourceFiles(root: string): Promise<string[]> {
+	const entries = await readdir(root, { withFileTypes: true });
 	const files: string[] = [];
 	for (const entry of entries) {
 		const path = join(root, entry.name);
-		if (entry.isDirectory() && !['test', 'generated'].includes(entry.name)) files.push(...sourceFiles(path));
+		if (entry.isDirectory() && !['test', 'generated'].includes(entry.name))
+			files.push(...(await sourceFiles(path)));
 		else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) files.push(path);
 	}
 	return files;
@@ -82,8 +83,8 @@ interface StaticDocument {
 	document: string;
 }
 
-function staticGraphqlDocuments(file: string): StaticDocument[] {
-	const source = readFileSync(file, 'utf8');
+async function staticGraphqlDocuments(file: string): Promise<StaticDocument[]> {
+	const source = await readFile(file, 'utf8');
 	const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 	const declarations = declarationsByName(sourceFile);
 	const documents: StaticDocument[] = [];
@@ -118,9 +119,10 @@ function staticGraphqlDocuments(file: string): StaticDocument[] {
 }
 
 suite('Unit: committed GraphQL document/schema parity', () => {
-	test('every static runtime GraphQL document validates against the committed schema', () => {
-		const schema = buildSchema(readFileSync('src/sessions/graphql/schema.graphql', 'utf8'));
-		const documents = SOURCE_ROOTS.flatMap(sourceFiles).flatMap(staticGraphqlDocuments);
+	test('every static runtime GraphQL document validates against the committed schema', async () => {
+		const schema = buildSchema(await readFile('src/sessions/graphql/schema.graphql', 'utf8'));
+		const files = (await Promise.all(SOURCE_ROOTS.map(sourceFiles))).flat();
+		const documents = (await Promise.all(files.map(staticGraphqlDocuments))).flat();
 		assert.ok(documents.length >= 45, `expected broad runtime coverage, found only ${documents.length} documents`);
 
 		const failures: string[] = [];
@@ -140,12 +142,12 @@ suite('Unit: committed GraphQL document/schema parity', () => {
 		assert.deepStrictEqual(failures, []);
 	});
 
-	test('typed SDK operation files and fragments validate together against the snapshot', () => {
+	test('typed SDK operation files and fragments validate together against the snapshot', async () => {
 		const root = 'src/sessions/graphql';
-		const schema = buildSchema(readFileSync(join(root, 'schema.graphql'), 'utf8'));
-		const documents = readdirSync(root).filter(file => file.endsWith('.graphql') && file !== 'schema.graphql');
+		const schema = buildSchema(await readFile(join(root, 'schema.graphql'), 'utf8'));
+		const documents = (await readdir(root)).filter(file => file.endsWith('.graphql') && file !== 'schema.graphql');
 		assert.ok(documents.length > 0);
-		const parsed = parse(documents.map(file => readFileSync(join(root, file), 'utf8')).join('\n'));
+		const parsed = parse((await Promise.all(documents.map(file => readFile(join(root, file), 'utf8')))).join('\n'));
 		assert.deepStrictEqual(
 			validate(schema, parsed).map(error => error.message),
 			[],

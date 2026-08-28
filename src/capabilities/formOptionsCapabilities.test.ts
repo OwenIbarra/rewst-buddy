@@ -178,6 +178,21 @@ suite('Unit: formOptionsCapabilities', () => {
 		assert.strictEqual(output.valueKeyCheck.status, 'failed');
 	});
 
+	test('fails both key checks when cached options include non-object rows', async () => {
+		setMcpMutationApprover(async () => true);
+		const { ctx } = sequencedCtx([generatorWorkflow, options([null, 'user', ['label', 'value']])]);
+		const output = JSON.parse(
+			await cap('buddy_test_form_options').run(
+				{ orgId: 'org-1', workflowId: 'wf', input: { tenant_id: 'x' } },
+				ctx,
+			),
+		);
+		assert.strictEqual(output.status, 'failed');
+		assert.strictEqual(output.labelKeyCheck.status, 'failed');
+		assert.strictEqual(output.valueKeyCheck.status, 'failed');
+		assert.match(output.labelKeyCheck.message, /3 of 3 returned option\(s\) are not objects/);
+	});
+
 	test('reports an asynchronous run as running with the key checks not run', async () => {
 		setMcpMutationApprover(async () => true);
 		const { ctx } = sequencedCtx([

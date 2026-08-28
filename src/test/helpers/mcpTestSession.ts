@@ -2,6 +2,12 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Session } from '@sessions';
 
+export function validateMcpTestEndpoint(endpoint: URL): void {
+	if (endpoint.protocol !== 'https:' || !['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname)) {
+		throw new Error('MCP live tests with a bearer token require an HTTPS loopback endpoint.');
+	}
+}
+
 /**
  * Opt-in live-test adapter for contributors who already have Buddy signed in.
  * Credentials stay in the existing extension host. Every request traverses its
@@ -14,9 +20,7 @@ export async function getMcpTestSession(): Promise<{ session: Session; close: ()
 	const endpoint = new URL(process.env.REWST_TEST_MCP_URL ?? '');
 	if (!orgId || !token)
 		throw new Error('MCP live tests require an explicit REWST_TEST_ORG_ID and REWST_TEST_MCP_TOKEN.');
-	if (endpoint.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname)) {
-		throw new Error('MCP live tests only connect to a local loopback HTTP server.');
-	}
+	validateMcpTestEndpoint(endpoint);
 	const client = new Client({ name: 'rewst-buddy-form-integration', version: '1' });
 	const transport = new StreamableHTTPClientTransport(endpoint, {
 		requestInit: { headers: { Authorization: `Bearer ${token}` }, redirect: 'error' },

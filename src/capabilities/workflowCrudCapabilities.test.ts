@@ -80,6 +80,13 @@ suite('Unit: workflowCrudCapabilities', () => {
 			assert.strictEqual(schema.properties.description.maxLength, 255);
 		});
 
+		test('documents that an empty output value is stored as an empty expression', () => {
+			const schema = cap('buddy_create_workflow').spec.inputSchema as {
+				properties: { output: { items: { properties: { value: { description: string } } } } };
+			};
+			assert.match(schema.properties.output.items.properties.value.description, /empty expression/);
+		});
+
 		test('creates an empty workflow when approved', async () => {
 			const { ctx, calls } = makeCtx({ create: { data: { createWorkflow: { id: 'w1', name: 'Onboard' } } } });
 			setMcpMutationApprover(async () => true);

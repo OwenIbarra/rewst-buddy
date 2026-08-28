@@ -1,8 +1,4 @@
-# Draft PR description — form semantics, verification and the option-generator loop
-
-> Draft only. No PR has been opened or pushed. When opening it, use
-> `gh pr create --draft` per the repository conventions, and add the PR number
-> to the `pr:` frontmatter of the `changelog.d/193-*.md` notes.
+# Internal draft PR description — form semantics, verification and the option-generator loop
 
 **Title:** Form semantics: compile, validate, verify, and actually test option generators
 
@@ -83,14 +79,14 @@ statically validates the new documents), MCP boundary gates
 (`write_disabled` / `org_out_of_scope` / `workflow_out_of_scope` before any
 network access), and MCP over real in-memory SDK transport.
 
-**Not verified:** the live sandbox lifecycle. There are no test credentials in
-the environment this was built in, so all 97 integration tests report pending,
-including the new option-generator lifecycle test. That test exists, creates only
+**Not verified:** the live sandbox lifecycle. Test credentials were unavailable
+in the environment this was built in, so the integration suite remains pending,
+including the option-generator lifecycle test. That test exists, creates only
 inert synthetic fixtures in an explicitly selected sandbox, and cleans up in a
 `finally` block — but it is not evidence until it is run. Rendering the resulting
 form in a signed-in browser, and the MCP catalogue as seen by an external client
 after installing this build, are also unverified. See the "Not verified" section
-of `docs/dev/graphql-schema-audit-2026-08-27.md` for the exact commands.
+of `internal/form-semantics/graphql-schema-audit-2026-08-27.md` for the exact commands.
 
 ## Files worth reading first
 
