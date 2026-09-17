@@ -29,6 +29,24 @@ export function getRegionConfigs(): RegionConfig[] {
 			graphqlUrl: 'https://api.rewst.io/graphql',
 			loginUrl: 'https://app.rewst.io',
 		},
+		{
+			name: 'United Kingdom',
+			cookieName: 'euAppSession',
+			graphqlUrl: 'https://api.eu.rewst.io/graphql',
+			loginUrl: 'https://app.eu.rewst.io',
+		},
+		{
+			name: 'Asia',
+			cookieName: 'auAppSession',
+			graphqlUrl: 'https://api.rewst.asia/graphql',
+			loginUrl: 'https://app.rewst.asia',
+		},
+		{
+			name: 'Europe',
+			cookieName: 'deAppSession',
+			graphqlUrl: 'https://api.rewst.eu/graphql',
+			loginUrl: 'https://app.rewst.eu',
+		},
 	]);
 
 	if (regions.length === 0)

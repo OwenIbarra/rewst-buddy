@@ -21,7 +21,12 @@ const mocks = vi.hoisted(() => {
 	const activeProfiles: unknown[] = [];
 	const knownProfiles: unknown[] = [];
 	const clients: { close: AsyncMock; callTool: AsyncMock }[] = [];
-	const transports: { close: ReturnType<typeof vi.fn>; terminateSession: ReturnType<typeof vi.fn> }[] = [];
+	const transports: {
+		close: ReturnType<typeof vi.fn>;
+		terminateSession: ReturnType<typeof vi.fn>;
+		onclose?: () => void;
+		onerror?: (error: Error) => void;
+	}[] = [];
 	const shared = {
 		discover: vi.fn(async () => undefined as SharedDescriptor | undefined),
 		start: vi.fn(async () => {
@@ -252,6 +257,8 @@ vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
 	StreamableHTTPClientTransport: class {
 		readonly close = vi.fn(async () => {});
 		readonly terminateSession = vi.fn(async () => {});
+		onclose?: () => void;
+		onerror?: (error: Error) => void;
 		constructor() {
 			mocks.transports.push(this);
 		}
@@ -373,6 +380,78 @@ describe('shared backend lifecycle', () => {
 		expect(mocks.transports[0]?.terminateSession).toHaveBeenCalled();
 		expect(mocks.transports[0]?.close).toHaveBeenCalled();
 		expect(mocks.runtime.stop).not.toHaveBeenCalled();
+	});
+
+	it('does not promote a remote connection when the owner closes during editor attachment', async () => {
+		mocks.shared.discover.mockResolvedValue(mocks.shared.descriptor);
+		let releaseConnect!: () => void;
+		mocks.connectGate = new Promise<void>(resolve => {
+			releaseConnect = resolve;
+		});
+		const disposable = initializeBackend();
+		await vi.waitFor(() => expect(mocks.transports).toHaveLength(1));
+		mocks.clients[0]?.callTool.mockImplementation(async () => {
+			// The attach request is still pending when the owner transport closes.
+			mocks.transports[0]?.onclose?.();
+			return { structuredContent: { result: [] } };
+		});
+
+		releaseConnect();
+		await expect(invoke('tools.list', {})).rejects.toThrow(/disconnected during editor attachment/);
+		expect(getBackendServerDelegate()?.getStatus()).toBe(false);
+		expect(mocks.sharedConnection).toBeUndefined();
+
+		disposable.dispose();
+		await new Promise(resolve => setImmediate(resolve));
+	});
+
+	it('clears the attached editor state when the owner transport closes unexpectedly', async () => {
+		mocks.shared.discover.mockResolvedValue(mocks.shared.descriptor);
+		const disposable = initializeBackend();
+		await vi.waitFor(() => expect(mocks.transports).toHaveLength(1));
+		await vi.waitFor(() => expect(mocks.sharedConnection).toMatchObject({ owned: false }));
+
+		mocks.transports[0]?.onclose?.();
+		expect(cachedTools()).toEqual([]);
+		expect(cachedResources()).toEqual([]);
+		await expect(invoke('tools.list', {})).rejects.toThrow(/has not been initialized/);
+
+		disposable.dispose();
+		await new Promise(resolve => setImmediate(resolve));
+	});
+
+	it('clears the attached editor state when owner reconnects are exhausted', async () => {
+		mocks.shared.discover.mockResolvedValue(mocks.shared.descriptor);
+		const disposable = initializeBackend();
+		await vi.waitFor(() => expect(mocks.transports).toHaveLength(1));
+		await vi.waitFor(() => expect(mocks.sharedConnection).toMatchObject({ owned: false }));
+
+		mocks.transports[0]?.onerror?.(new Error('Maximum reconnection attempts (0) exceeded.'));
+		expect(cachedTools()).toEqual([]);
+		expect(cachedResources()).toEqual([]);
+		expect(mocks.sharedConnection).toBeUndefined();
+		expect(getBackendServerDelegate()?.getStatus()).toBe(false);
+		await expect(invoke('tools.list', {})).rejects.toThrow(/has not been initialized/);
+
+		disposable.dispose();
+		await new Promise(resolve => setImmediate(resolve));
+	});
+
+	it('refuses to bind a replacement listener after the attached owner disconnects', async () => {
+		mocks.shared.discover.mockResolvedValue(mocks.shared.descriptor);
+		const disposable = initializeBackend();
+		await vi.waitFor(() => expect(mocks.transports).toHaveLength(1));
+		await vi.waitFor(() => expect(mocks.sharedConnection).toMatchObject({ owned: false }));
+
+		mocks.transports[0]?.onclose?.();
+		const started = await getBackendServerDelegate()?.start();
+		expect(started).toBe(false);
+		expect(mocks.shared.start).not.toHaveBeenCalled();
+		expect(mocks.runtime.start).not.toHaveBeenCalled();
+		expect(getBackendServerDelegate()?.getStatus()).toBe(false);
+
+		disposable.dispose();
+		await new Promise(resolve => setImmediate(resolve));
 	});
 
 	it('does not fall back to a local runtime when discovery cannot verify the owner', async () => {

@@ -282,8 +282,20 @@ directory.
 
 ## Regions
 
-North America is built in. For other regions, pass `--config PATH` with a JSON
-object containing a non-empty `regions` array:
+North America (US), United Kingdom (UK), Asia (AU), and Europe (DE) are built
+in. The built-in regional endpoints are:
+
+| Region | App/login                 | GraphQL API                       | Engine                       | Subscriptions                         | Cookie         |
+| ------ | ------------------------- | --------------------------------- | ---------------------------- | ------------------------------------- | -------------- |
+| US     | `https://app.rewst.io`    | `https://api.rewst.io/graphql`    | `https://engine.rewst.io`    | `wss://api.rewst.io/subscriptions`    | `appSession`   |
+| UK     | `https://app.eu.rewst.io` | `https://api.eu.rewst.io/graphql` | `https://engine.eu.rewst.io` | `wss://api.eu.rewst.io/subscriptions` | `euAppSession` |
+| AU     | `https://app.rewst.asia`  | `https://api.rewst.asia/graphql`  | `https://engine.rewst.asia`  | `wss://api.rewst.asia/subscriptions`  | `auAppSession` |
+| DE     | `https://app.rewst.eu`    | `https://api.rewst.eu/graphql`    | `https://engine.rewst.eu`    | `wss://api.rewst.eu/subscriptions`    | `deAppSession` |
+
+Rewst's public deployment docs verify the app, API, and engine hosts. Cookie
+names are not published there; these built-in values match the current auth
+endpoints and can be overridden. For other regions, pass `--config PATH` with
+a JSON object containing a non-empty `regions` array:
 
 ```json
 {

@@ -107,6 +107,10 @@ subscription ConversationMessageSubscription(
 | `metadata`         | **Must contain `{ orgId }`.** The web app sends `{ ...pageContext, orgId }`. Route/workflow context can be added here to unlock context-aware behavior (e.g. workflow editing tools only activate in Workflow Builder context). |
 | `resumeRequestId`  | `null` for new requests. Pass the `requestId` from the `request_registered` event to reattach after a dropped connection — or to continue a request paused by `approval_required` (see below).                                  |
 
+The VS Code chat provider replays the visible USER/ASSISTANT history for each
+follow-up, so Restore Checkpoint and edited branches do not inherit hidden
+backend turns.
+
 ### Status event state machine
 
 One subscription produces a stream of events. `status` values observed live, in order:

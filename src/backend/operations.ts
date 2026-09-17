@@ -322,6 +322,7 @@ export function initializeBackend(options: BackendOptions = {}): vscode.Disposab
 	let local: vscode.Disposable | undefined;
 	let hub: Awaited<ReturnType<typeof startSharedHttpServer>> | undefined;
 	let remote: BackendConnection | undefined;
+	let ownerDisconnected = false;
 	let pendingListen: Promise<void> | undefined;
 	let runtimeReadyResolve!: () => void;
 	let runtimeReadyReject!: (reason: unknown) => void;
@@ -368,7 +369,15 @@ export function initializeBackend(options: BackendOptions = {}): vscode.Disposab
 		}
 	};
 	const attach = async (descriptor: SharedServerDescriptor): Promise<Client> => {
-		const next = await connectRemote(descriptor);
+		const next = await connectRemote(descriptor, disconnectedClient => {
+			if (remote?.client === disconnectedClient) {
+				remote = undefined;
+			}
+			// This callback also runs while the initial editor attachment is still
+			// pending, before `remote` can be promoted. Keep the owner-loss state
+			// regardless of which phase the transport reached.
+			ownerDisconnected = true;
+		});
 		if (disposed) {
 			await closeConnection(next);
 			throw new Error('Backend disposed');
@@ -422,9 +431,21 @@ export function initializeBackend(options: BackendOptions = {}): vscode.Disposab
 	})();
 	connection = ready;
 	setBackendServerDelegate({
-		getStatus: () => !!hub || !!remote,
+		getStatus: () => !!hub || (!!remote && activeConnection?.client === remote.client),
 		start: async () => {
+			if (ownerDisconnected) {
+				log.notifyError(
+					'Rewst Buddy owner disconnected. Reload the VS Code window before starting a fresh local server.',
+				);
+				return false;
+			}
 			await ready;
+			if (ownerDisconnected) {
+				log.notifyError(
+					'Rewst Buddy owner disconnected. Reload the VS Code window before starting a fresh local server.',
+				);
+				return false;
+			}
 			if (!remote && !hub) await listen();
 			return true;
 		},
@@ -486,7 +507,10 @@ export function initializeBackend(options: BackendOptions = {}): vscode.Disposab
 		},
 	};
 }
-async function connectRemote(descriptor: SharedServerDescriptor): Promise<BackendConnection> {
+async function connectRemote(
+	descriptor: SharedServerDescriptor,
+	onUnexpectedDisconnect?: (client: Client) => void,
+): Promise<BackendConnection> {
 	const client = new Client({ name: 'rewst-buddy-vscode', version: '1.0.0' });
 	client.setNotificationHandler(
 		z.object({ method: z.literal('notifications/rewst/event'), params: z.object({ event: z.unknown() }) }),
@@ -502,22 +526,92 @@ async function connectRemote(descriptor: SharedServerDescriptor): Promise<Backen
 	const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${descriptor.port}/editor`), {
 		requestInit: { headers: { Authorization: `Bearer ${descriptor.editorToken}` }, redirect: 'error' },
 	});
+	let intentionalClose = false;
+	let disconnected = false;
+	let disconnectCause: Error | undefined;
+	let rejectDisconnect!: (reason: Error) => void;
+	const disconnectPromise = new Promise<never>((_, reject) => {
+		rejectDisconnect = reject;
+	});
+	void disconnectPromise.catch(() => undefined);
+	const invalidateRemote = (cause?: Error): void => {
+		// Owner shutdown or a broken private connection invalidates the attached
+		// window's view. Do not leave stale active/expired sessions in the facade.
+		if (intentionalClose || disconnected) return;
+		disconnected = true;
+		disconnectCause = cause ?? new Error('The shared Rewst Buddy server disconnected during editor attachment.');
+		rejectDisconnect(disconnectCause);
+		onUnexpectedDisconnect?.(client);
+		// During the initial editor attachment there is no active connection yet;
+		// the caller will observe `disconnected` below and reject promotion.
+		if (activeConnection?.client !== client) return;
+		if (cause) log.warn('Attached Rewst Buddy server connection lost', cause);
+		activeConnection = undefined;
+		connection = undefined;
+		closed = true;
+		generation++;
+		tools = [];
+		resources = [];
+		setSharedConnection(undefined);
+		events.fire({
+			type: 'sessions',
+			snapshot: { sessions: [], knownProfiles: [] },
+			changeType: 'cleared',
+		});
+		events.fire({ type: 'scope', snapshot: { orgs: [], workflows: [] } });
+	};
+	transport.onclose = () => invalidateRemote();
+	transport.onerror = error => {
+		// The SDK reports a graceful SSE EOF by scheduling reconnects and only
+		// calls onclose for an explicit close(). Treat retry exhaustion as the
+		// equivalent unexpected disconnect so an attached editor cannot retain
+		// stale owner state indefinitely.
+		if (/Maximum reconnection attempts \(\d+\) exceeded\./.test(error.message)) invalidateRemote(error);
+		else log.debug('Attached Rewst Buddy server transport error', error);
+	};
 	try {
 		await client.connect(transport);
-		const result = await client.callTool({
-			name: 'rewst_editor_operation',
-			arguments: { operation: 'editor.attach', input: { capabilities: getEditorCapabilities() } },
-		});
+		const result = await Promise.race([
+			client.callTool({
+				name: 'rewst_editor_operation',
+				arguments: { operation: 'editor.attach', input: { capabilities: getEditorCapabilities() } },
+			}),
+			disconnectPromise,
+		]);
 		if (result.isError) throw new Error('The shared server rejected the editor attachment.');
+		if (disconnected)
+			throw disconnectCause ?? new Error('The shared Rewst Buddy server disconnected during editor attachment.');
+		const attached = (result.structuredContent as { result?: unknown } | undefined)?.result;
+		if (attached && typeof attached === 'object' && !Array.isArray(attached)) {
+			const snapshot = (attached as { sessions?: unknown }).sessions;
+			if (
+				snapshot &&
+				typeof snapshot === 'object' &&
+				!Array.isArray(snapshot) &&
+				Array.isArray((snapshot as { sessions?: unknown }).sessions) &&
+				Array.isArray((snapshot as { knownProfiles?: unknown }).knownProfiles)
+			) {
+				events.fire({ type: 'sessions', snapshot, changeType: 'saved' });
+			}
+		}
 	} catch (error) {
+		intentionalClose = true;
 		await transport.terminateSession().catch(() => undefined);
 		await client.close();
 		throw error;
 	}
+	const closeRemote = async (): Promise<void> => {
+		intentionalClose = true;
+		await transport.terminateSession().catch(() => undefined);
+	};
+	const closeClientTransport = async (): Promise<void> => {
+		intentionalClose = true;
+		await transport.close().catch(() => undefined);
+	};
 	return {
 		client,
 		remote: true,
-		clientTransport: transport,
-		serverTransport: { close: () => transport.terminateSession().catch(() => undefined) },
+		clientTransport: { close: closeClientTransport },
+		serverTransport: { close: closeRemote },
 	};
 }
