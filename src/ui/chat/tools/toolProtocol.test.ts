@@ -243,6 +243,41 @@ suite('Unit: toolProtocol', () => {
 			assert.ok(!text.includes('buddy_workflow_edit'));
 		});
 
+		test('pairs multi-step plans with the first tool block, never a tool-free reply (#206)', () => {
+			// Mirrors the engineering-directive contract: a tool-free plan reply ends
+			// the turn with nothing executed, so the next turn re-plans and the chat
+			// loops on "I'll do X" narration.
+			const text = buildToolInstructions([{ name: 'read_file', args: '{}', description: 'Read.' }]);
+			assert.ok(!/tool-free reply/i.test(text), 'never steers a tool-free plan reply');
+			assert.ok(/SAME reply/i.test(text), 'plan and first step share one reply');
+			assert.ok(/do not restate it/i.test(text), 'does not restate an already-stated plan');
+			assert.ok(
+				/doubles as the first step's lead-in/i.test(text),
+				'plan sentence doubles as the first step lead-in, no second lead-in',
+			);
+			assert.ok(
+				/follow-up details request, which stays block-only/i.test(text),
+				'later detail lookups stay block-only while other later steps keep the lead-in',
+			);
+		});
+
+		test('batches summarized-tool expansions instead of ping-ponging details (#206)', () => {
+			// The catalog section only renders when the manifest overflows its
+			// budget, so this needs the overflow shape: many tools, small budget.
+			const specs = Array.from({ length: 60 }, (_, i) => ({
+				name: `buddy_tool_${i}`,
+				args: JSON.stringify({ type: 'object', properties: { a: { type: 'string' } } }),
+				description: `Does thing ${i}. ${'Long steering prose. '.repeat(30)}`,
+			}));
+			const text = buildToolInstructions(specs, { budget: 12_000 });
+			assert.ok(text.includes('Tool catalog (summary only):'), 'a catalog section is present');
+			assert.ok(/together in one reply/i.test(text), 'batches details expansions instead of ping-ponging');
+			assert.ok(
+				/first-step details request may carry the one short plan sentence/i.test(text),
+				'a first-step details request allows the plan lead-in like any other first step',
+			);
+		});
+
 		test('states vscode-tool blocks are extension-executed requests, including edit tools', () => {
 			const text = buildToolInstructions([
 				{

@@ -280,7 +280,9 @@ suite('Unit: RoboRewstyChatModelProvider', () => {
 		const reply =
 			'Looking it up.\n```vscode-tool\n{"tool": "buddy_workflow_get", "args": {"workflowId": "w1"}}\n```';
 		const buddyCalls: { name: string; args: unknown; orgId: string }[] = [];
-		const harness = makeHarness([completeTurn(reply, 'conv-1'), completeTurn('It is named Deploy.', 'conv-1')], {
+		// Fixtures echo the seeded id the way the backend confirms it, so the
+		// shared response conversation stays stable across rounds.
+		const harness = makeHarness([completeTurn(reply, 'seed-1'), completeTurn('It is named Deploy.', 'seed-1')], {
 			buddyToolSpecs: () => [BUDDY_GET_SPEC],
 			runBuddyTool: async (name, args, orgId) => {
 				buddyCalls.push({ name, args, orgId });
@@ -296,17 +298,21 @@ suite('Unit: RoboRewstyChatModelProvider', () => {
 		assert.strictEqual(callsOf(harness.parts).length, 0, 'buddy tools never surface as VS Code tool calls');
 		assert.ok(visibleText(harness.parts).includes('It is named Deploy.'), 'the final answer streams');
 
-		// Two backend turns within one chat response: the tool round, then the answer.
+		// Two backend asks share one conversation: the tool round, then the answer.
 		assert.strictEqual(harness.captured.length, 2);
-		assert.strictEqual(
-			harness.captured[1].conversationId,
-			'seed-2',
-			'results use a fresh disposable conversation id',
+		assert.deepStrictEqual(
+			harness.captured.map(call => call.conversationId),
+			['seed-1', 'seed-1'],
+			'the results round reuses the response conversation',
 		);
-		assert.strictEqual(harness.seeded.length, 2);
+		assert.strictEqual(harness.seeded.length, 1, 'one seed per response');
 		assert.ok(harness.captured[1].message.includes('Tool results:'), 'results sent compactly');
 		assert.ok(harness.captured[1].message.includes('name: Deploy'), 'tool output fed back to the backend');
 		assert.ok(harness.captured[1].message.includes('buddy_workflow_get'));
+		assert.ok(
+			!harness.captured[1].message.includes('# Rewst Buddy VS Code Context'),
+			'the continuation carries a bare results tail, not a re-sent directive',
+		);
 
 		// In-process buddy calls render as a "Buddy tool" card (distinct from the
 		// backend's "Rewst tool"), showing the name once, then the args alone.
@@ -317,79 +323,97 @@ suite('Unit: RoboRewstyChatModelProvider', () => {
 		assert.ok(!out.includes('buddy_workflow_get {'), 'the args line does not repeat the tool name');
 	});
 
-	test('preserves every in-process Buddy round in later disposable seeds', async () => {
+	test('runs each in-process Buddy round in the shared response conversation', async () => {
 		const firstReply =
 			'First lookup.\n```vscode-tool\n{"tool":"buddy_workflow_get","args":{"workflowId":"a"}}\n```';
 		const secondReply =
 			'Second lookup.\n```vscode-tool\n{"tool":"buddy_workflow_get","args":{"workflowId":"b"}}\n```';
-		const harness = makeHarness([completeTurn(firstReply), completeTurn(secondReply), completeTurn('Done.')], {
-			buddyToolSpecs: () => [BUDDY_GET_SPEC],
-			runBuddyTool: async (_name, args) => ({
-				text: `result-${(args as { workflowId: string }).workflowId}`,
-				isError: false,
-			}),
-		});
+		const harness = makeHarness(
+			[completeTurn(firstReply, 'seed-1'), completeTurn(secondReply, 'seed-1'), completeTurn('Done.', 'seed-1')],
+			{
+				buddyToolSpecs: () => [BUDDY_GET_SPEC],
+				runBuddyTool: async (_name, args) => ({
+					text: `result-${(args as { workflowId: string }).workflowId}`,
+					isError: false,
+				}),
+			},
+		);
 
 		await harness.run([message(User, [text('look up both workflows')])]);
 
 		assert.strictEqual(harness.captured.length, 3, 'both tool rounds and the final answer are requested');
-		const secondSeed = harness.seeded[1].chunks.map(chunk => chunk.content).join('\n');
-		const thirdSeed = harness.seeded[2].chunks.map(chunk => chunk.content).join('\n');
-		assert.match(secondSeed, /Requested Buddy tool: buddy_workflow_get/);
-		assert.ok(!secondSeed.includes('result-a'), 'the latest result stays in the current ask tail');
-		assert.match(thirdSeed, /result-a/, 'the first result is promoted before the next round');
-		assert.match(thirdSeed, /workflowId":"b/, 'the second request is retained in the seeded transcript');
+		assert.deepStrictEqual(
+			harness.captured.map(call => call.conversationId),
+			['seed-1', 'seed-1', 'seed-1'],
+			'rounds share one conversation instead of reseeding',
+		);
+		assert.strictEqual(harness.seeded.length, 1, 'one seed per response');
+		assert.match(harness.captured[1].message, /result-a/, 'the first result reaches the next round');
 		assert.match(harness.captured[2].message, /result-b/, 'the latest result reaches the final ask');
 	});
 
-	test('preserves long Buddy request arguments in the next seeded transcript', async () => {
+	test('passes complete Buddy request arguments to the tool within one response conversation', async () => {
 		const args = { blob: 'x'.repeat(500) };
 		const reply = `Lookup.\n\`\`\`vscode-tool\n${JSON.stringify({
 			tool: 'buddy_workflow_get',
 			args,
 		})}\n\`\`\``;
-		const harness = makeHarness([completeTurn(reply), completeTurn('Done.')], {
+		let received: unknown;
+		const harness = makeHarness([completeTurn(reply, 'seed-1'), completeTurn('Done.', 'seed-1')], {
 			buddyToolSpecs: () => [BUDDY_GET_SPEC],
-			runBuddyTool: async () => ({ text: 'result', isError: false }),
+			runBuddyTool: async (_name, toolArgs) => {
+				received = toolArgs;
+				return { text: 'result', isError: false };
+			},
 		});
 
 		await harness.run([message(User, [text('look up workflow details')])]);
 
-		const nextSeed = harness.seeded[1].chunks.map(chunk => chunk.content).join('\n');
-		assert.ok(
-			nextSeed.includes(JSON.stringify(args)),
-			'seeded Buddy request keeps the complete serialized argument value',
+		assert.deepStrictEqual(received, args, 'the tool receives the complete serialized argument value');
+		assert.strictEqual(harness.seeded.length, 1, 'one seed per response');
+		assert.deepStrictEqual(
+			harness.captured.map(call => call.conversationId),
+			['seed-1', 'seed-1'],
+			'rounds share one conversation so arguments persist',
 		);
 	});
 
 	test('keeps Buddy results when a later native-tool redirect replaces the ask tail', async () => {
 		const buddyReply = 'Lookup.\n```vscode-tool\n{"tool":"buddy_workflow_get","args":{"workflowId":"a"}}\n```';
 		const nativeAttempt: ConversationEvent[] = [
-			{ kind: 'conversation', conversationId: 'conv-native' },
+			{ kind: 'conversation', conversationId: 'seed-1' },
 			{
 				kind: 'status',
 				label: 'Running Rewst tool: listWorkflow…',
 				activity: true,
 				tool: { name: 'listWorkflow' },
 			},
-			{ kind: 'complete', content: 'ignored', sources: [], conversationId: 'conv-native' },
+			{ kind: 'complete', content: 'ignored', sources: [], conversationId: 'seed-1' },
 		];
-		const harness = makeHarness([completeTurn(buddyReply), nativeAttempt, completeTurn('Recovered.')], {
-			buddyToolSpecs: () => [BUDDY_GET_SPEC],
-			runBuddyTool: async () => ({ text: 'result-a', isError: false }),
-		});
+		const harness = makeHarness(
+			[completeTurn(buddyReply, 'seed-1'), nativeAttempt, completeTurn('Recovered.', 'seed-1')],
+			{
+				buddyToolSpecs: () => [BUDDY_GET_SPEC],
+				runBuddyTool: async () => ({ text: 'result-a', isError: false }),
+			},
+		);
 
 		await harness.run([message(User, [text('look up workflow a')])]);
 
 		assert.strictEqual(harness.captured.length, 3, 'the result round, redirect, and recovery are requested');
-		const redirectedSeed = harness.seeded[2].chunks.map(chunk => chunk.content).join('\n');
-		assert.match(redirectedSeed, /result-a/, 'the redirect does not erase the previous Buddy result');
+		assert.deepStrictEqual(
+			harness.captured.map(call => call.conversationId),
+			['seed-1', 'seed-1', 'seed-1'],
+			'the redirect reuses the response conversation, so the previous Buddy result persists',
+		);
 		assert.match(harness.captured[2].message, /vscode-tool/, 'the replacement tail is the redirect correction');
 	});
 
 	test('redirects native Rewst tool activity to the local Buddy tool protocol when Buddy tools are enabled', async () => {
+		// Fixtures echo the seeded id the way the backend confirms it, so the
+		// shared response conversation stays stable across rounds.
 		const nativeAttempt: ConversationEvent[] = [
-			{ kind: 'conversation', conversationId: 'conv-1' },
+			{ kind: 'conversation', conversationId: 'seed-1' },
 			{
 				kind: 'status',
 				label: 'Running Rewst tool: listWorkflow…',
@@ -401,13 +425,13 @@ suite('Unit: RoboRewstyChatModelProvider', () => {
 				kind: 'complete',
 				content: 'native result that should not stream',
 				sources: [],
-				conversationId: 'conv-1',
+				conversationId: 'seed-1',
 			},
 		];
 		const buddyReply = '```vscode-tool\n{"tool": "buddy_workflow_get", "args": {"workflowId": "w1"}}\n```';
 		const buddyCalls: { name: string; args: unknown; orgId: string }[] = [];
 		const harness = makeHarness(
-			[nativeAttempt, completeTurn(buddyReply, 'conv-1'), completeTurn('Deploy.', 'conv-1')],
+			[nativeAttempt, completeTurn(buddyReply, 'seed-1'), completeTurn('Deploy.', 'seed-1')],
 			{
 				buddyToolSpecs: () => [BUDDY_GET_SPEC],
 				runBuddyTool: async (name, args, orgId) => {
@@ -424,11 +448,7 @@ suite('Unit: RoboRewstyChatModelProvider', () => {
 			3,
 			'native attempt is followed by correction, buddy call, and answer',
 		);
-		assert.strictEqual(
-			harness.captured[1].conversationId,
-			'seed-2',
-			'correction receives a disposable conversation id',
-		);
+		assert.strictEqual(harness.captured[1].conversationId, 'seed-1', 'correction reuses the response conversation');
 		assert.ok(harness.captured[1].message.includes('vscode-tool'), 'correction names the fenced protocol');
 		assert.ok(harness.captured[1].message.includes('local tool protocol'), 'correction is transport-focused');
 		assert.ok(harness.captured[1].message.includes('VS Code'), 'correction names the editor transport');
@@ -491,6 +511,10 @@ suite('Unit: RoboRewstyChatModelProvider', () => {
 			'correction carries the resolved native args',
 		);
 		assert.ok(!/<[^>\n]+>/.test(correction), 'carried args do not introduce XML-like tags');
+		assert.ok(
+			!correction.includes('# Rewst Buddy VS Code Context'),
+			'correction is a bare tail, not a re-sent directive and manifest',
+		);
 	});
 
 	test('redirects a server-side Rewst tool even when VS Code already supplied every Buddy tool natively', async () => {
@@ -1112,6 +1136,38 @@ suite('Unit: RoboRewstyChatModelProvider', () => {
 			harness.wrapper.getCallsFor('deleteConversation').length,
 			2,
 			'each disposable conversation is deleted',
+		);
+	});
+
+	test('in-response rounds share one conversation and delete it once', async () => {
+		const firstReply =
+			'First lookup.\n```vscode-tool\n{"tool":"buddy_workflow_get","args":{"workflowId":"a"}}\n```';
+		const harness = makeHarness([completeTurn(firstReply, 'seed-1'), completeTurn('Done.', 'seed-1')], {
+			buddyToolSpecs: () => [BUDDY_GET_SPEC],
+			runBuddyTool: async () => ({ text: 'result-a', isError: false }),
+		});
+		harness.wrapper.when('deleteConversation', variables => ({ data: { deleteConversation: variables.id } }));
+
+		await harness.run([message(User, [text('look up a workflow')])]);
+
+		assert.strictEqual(harness.seeded.length, 1, 'one seed per response');
+		assert.deepStrictEqual(
+			harness.captured.map(call => call.conversationId),
+			['seed-1', 'seed-1'],
+			'the tool round and the answer share the response conversation',
+		);
+		assert.ok(
+			harness.captured[0].message.includes('# Rewst Buddy VS Code Context'),
+			'the opening ask carries the directive',
+		);
+		assert.ok(
+			!harness.captured[1].message.includes('# Rewst Buddy VS Code Context'),
+			'the continuation carries a bare results tail, not a re-sent directive',
+		);
+		assert.strictEqual(
+			harness.wrapper.getCallsFor('deleteConversation').length,
+			1,
+			'the shared conversation is deleted once when the response ends',
 		);
 	});
 

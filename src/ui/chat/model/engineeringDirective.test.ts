@@ -110,6 +110,24 @@ suite('Unit: engineeringDirective', () => {
 		assert.ok(!directive.includes('purpose-built workflow tools'));
 		assert.ok(!directive.includes('buddy_execution_logs'));
 	});
+
+	test('plans ship with the first tool call, never as tool-free narration (#206)', () => {
+		// A tool-free plan reply ends the turn with nothing executed (the provider
+		// only continues on tool blocks), so the next turn re-plans and the chat
+		// reads as "I'll do X" on repeat. The plan must share a reply with its
+		// first tool block, and an already-stated plan must not be restated.
+		for (const tools of [new Set<string>(), new Set(['read_file']), new Set(['buddy_graphql'])]) {
+			const directive = buildEngineeringDirective(tools);
+			assert.ok(!/tool-free reply/i.test(directive), 'never steers a tool-free plan reply');
+			assert.ok(/SAME reply/i.test(directive), 'plan and first step share one reply');
+			assert.ok(/do not restate it/i.test(directive), 'does not restate an already-stated plan');
+			assert.ok(/do not re-narrate/i.test(directive), 'does not re-narrate tool results');
+			assert.ok(
+				/doubles as the first step's lead-in/i.test(directive),
+				'plan sentence doubles as the first step lead-in, no second lead-in',
+			);
+		}
+	});
 });
 
 suite('Unit: buildNativeToolReminder', () => {

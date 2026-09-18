@@ -252,9 +252,10 @@ export const defaultProviderDeps: ProviderDeps = {
  * Contributes RoboRewsty to VS Code's chat model picker: one model per active
  * Rewst session org. Chat requests stream through the existing askRewstAi
  * subscription; tool calling is translated between VS Code's tool contract
- * and RoboRewsty's text protocol (toolTranslation.ts). Every backend ask is
- * disposable: the visible transcript is seeded with explicit USER/ASSISTANT
- * records before the subscription starts, then the conversation is deleted.
+ * and RoboRewsty's text protocol (toolTranslation.ts). Each chat response runs
+ * in one disposable backend conversation shared across its tool rounds; the
+ * visible transcript is seeded with explicit USER/ASSISTANT records before the
+ * subscription starts, then the conversation is deleted.
  */
 export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProvider, vscode.Disposable {
 	private changeEmitter = new vscode.EventEmitter<void>();
@@ -408,9 +409,10 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 		// this seed history before a later tail replaces it.
 		let seedHistory = serializeVisibleChat(messages);
 
-		// Fire-and-forget delete of a transient per-ask conversation — must not
-		// delay the turn from completing. Every ask seeds a fresh conversation and
-		// the conversation is disposable once the stream ends.
+		// Fire-and-forget delete of the transient response conversation — must not
+		// delay the turn from completing. The first ask seeds a fresh conversation
+		// that continuation rounds reuse; it is deleted when the response
+		// terminates or before a fresh error retry.
 		const fireDelete = (id: string): void => {
 			void session.sdk?.deleteConversation({ id })?.catch(error => {
 				log.debug('RoboRewstyChatModelProvider: conversation delete failed', id, error);
@@ -475,19 +477,25 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 		// Once a buddy tool has actually run, its side effects make a restart unsafe.
 		let ranBuddyTool = false;
 
-		// Each iteration seeds and asks one disposable backend conversation.
+		// Each iteration asks one backend round. The first iteration seeds a fresh
+		// disposable conversation with the full prompt; continuation rounds reuse
+		// that same conversation and send only the new results/correction tail —
+		// the directive, manifest, and history are already in it. A `continue
+		// turns` after an error retry re-seeds because the retry deletes the
+		// failed conversation first. The outer finally handles thrown
+		// iterator/ask errors and early returns as well.
 		try {
 			turns: for (;;) {
-				// A `continue turns` leaves the previous disposable conversation behind
-				// until this point. Delete it before creating the replacement; the outer
-				// finally handles thrown iterator/ask errors and early returns as well.
-				deleteCurrentConversation();
 				const gate = new ChunkGate();
 				let completeContent = '';
 				let sources: ConversationSource[] = [];
 				let sawComplete = false;
-				message = this.buildAskMessage(session, customInstructions, permittedNames, advertisedSpecs, tail);
-				conversationId = await this.deps.seedConversation(session, orgId, conversationType, seedHistory);
+				if (conversationId === undefined) {
+					message = this.buildAskMessage(session, customInstructions, permittedNames, advertisedSpecs, tail);
+					conversationId = await this.deps.seedConversation(session, orgId, conversationType, seedHistory);
+				} else {
+					message = tail;
+				}
 
 				for await (const event of this.deps.ask({
 					session,
@@ -533,7 +541,6 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 											MAX_NATIVE_REDIRECT_ATTEMPTS,
 										);
 								tailForSeed = tail;
-								deleteCurrentConversation();
 								needsSeparator = true;
 								continue turns;
 							}
@@ -607,10 +614,11 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 					buddyNames,
 				);
 
-				// Buddy (MCP) tools run in-process. Their results become the tail of the
-				// next fresh seed, so they never depend on VS Code's capped options.tools
-				// list. Native/unavailable requests in the same reply are
-				// not run here; the results message tells the backend to re-issue them.
+				// Buddy (MCP) tools run in-process. Their results become the next message
+				// in the same backend conversation, so they never depend on VS Code's
+				// capped options.tools list. Native/unavailable requests in the same
+				// reply are not run here; the results message tells the backend to
+				// re-issue them.
 				if (buddyRequests.length > 0) {
 					emitText(remainder);
 					// A catalog lookup is not Rewst work: it reads this turn's own tool
@@ -688,9 +696,9 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 							output: result.text,
 						});
 					}
-					// Promote the prior round's result/correction before appending this
-					// round, so the next disposable conversation contains every earlier
-					// interaction and the latest result remains the current ask tail.
+					// Keep the in-response transcript in seedHistory so an error retry
+					// can reseed it fresh; the live rounds themselves stay in the
+					// shared conversation, with the latest result as the ask tail.
 					promoteTail();
 					const resultMessage = withDeferredToolsNote(
 						formatInProcessToolResults(results),
@@ -702,7 +710,6 @@ export class RoboRewstyChatModelProvider implements vscode.LanguageModelChatProv
 						seedHistory = appendSeedChunks(seedHistory, [{ role: 'ASSISTANT', content: assistantTurn }]);
 					tail = resultMessage;
 					tailForSeed = resultMessage;
-					deleteCurrentConversation();
 					needsSeparator = true;
 					continue turns;
 				}

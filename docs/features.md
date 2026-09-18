@@ -147,7 +147,7 @@ Talk to Rewst's AI assistant directly from VS Code's chat — as its own model, 
 
 - **Multi-turn** — follow-up questions are grounded in the visible VS Code chat transcript, so Restore Checkpoint and edited history naturally remove rolled-back turns from the assistant's context
 - **Resume** — `Rewst Buddy: Resume Rewst AI Conversation` (command palette) lists your recent Rewst conversations (the same history as the Rewst web app) and opens the picked transcript
-- **Lives in Rewst** — each turn is processed through a disposable Rewst conversation seeded from the visible transcript; the extension deletes it after the stream or local-tool round completes
+- **Lives in Rewst** — each turn is processed through a disposable Rewst conversation seeded from the visible transcript; tool rounds within the turn share that one conversation, and the extension deletes it after the response completes
 - **Safe follow-ups** — every follow-up replays the visible role-aware history, so Restore Checkpoint and edited branches cannot reconnect to hidden backend turns
 - **Organization** — each Cage-Free Rewsty model is tied to a session's organization; pick the org by picking the model
 - **Latency** — full answers typically take 20–40 seconds. Cancel any time with the stop button
