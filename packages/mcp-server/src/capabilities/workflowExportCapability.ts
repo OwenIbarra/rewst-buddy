@@ -5,6 +5,7 @@ import {
 	DEFAULT_EXPORT_INACTIVITY_TIMEOUT_MS,
 	MAX_EXPORT_INACTIVITY_TIMEOUT_MS,
 	MIN_EXPORT_INACTIVITY_TIMEOUT_MS,
+	redactExportError,
 	type ExportBundle,
 	type ExportObjectsSuccess,
 } from '../export/exportObjects';
@@ -14,7 +15,6 @@ import type { ToolSpecDefinition } from '../tools/toolProtocol';
 import type { Capability, CapabilityContext } from './Capability';
 import { readCapability } from './capabilityFactories';
 import { json, ORG_ID_FIELD, parseCapabilityInput, rawGraphqlOrThrow, toInputSchema } from './inputHelpers';
-import { redactExportError } from '../export/exportObjects';
 
 const WORKFLOW_OWNER_QUERY = `
 query RewstBuddyWorkflowOwner($id: ID!) {

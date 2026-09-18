@@ -271,7 +271,8 @@ writes the returned signed bundle to the local machine. Local output is limited
 to the user's Downloads directory, active editor workspace folders, the Git
 checkout containing the server's current directory, and additional absolute
 directories explicitly listed in `rewst-buddy.mcp.exportRoots`. Parent
-directories must already exist. Rewst Buddy resolves roots and destination
+directories for explicit `outputPath` values must already exist; the default
+`<home>/Downloads/Rewst Exports` folder is created when missing. Rewst Buddy resolves roots and destination
 parents canonically, rejecting path traversal and symlink-directory escapes.
 It also holds the destination directory open, creates temporary files with
 no-follow/exclusive flags, validates file and directory identities before and

@@ -19,7 +19,7 @@ export function refreshedCookieValue(values: readonly string[], cookieName: stri
 		if (equals > 0 && pair.slice(0, equals).trim() === cookieName) return pair;
 	}
 	const first = candidates[0];
-	if (!first) return undefined;
+	if (candidates.length !== 1 || !first) return undefined;
 	return first.includes(';') ? first.split(';', 1)[0].trim() : first;
 }
 

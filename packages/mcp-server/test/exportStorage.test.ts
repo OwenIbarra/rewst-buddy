@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+	buildTemporaryExportName,
 	LocalExportStorage,
 	ensureDefaultExportDir,
 	resolveDefaultExportDir,
@@ -194,5 +195,26 @@ describe('local signed-bundle storage', () => {
 		state.settings['mcp.exportDefaultDir'] = 'relative/exports';
 		expect(() => resolveDefaultExportDir()).toThrow('absolute directory path');
 		await expect(ensureDefaultExportDir()).rejects.toThrow('absolute directory path');
+	});
+
+	it('bounds the temporary filename within 255 bytes for a long basename', async () => {
+		const longBase = `${'a'.repeat(230)}.json`;
+		const target = join(state.root, longBase);
+		expect(Buffer.byteLength(longBase, 'utf8')).toBeLessThanOrEqual(255);
+		const saved = await save(target);
+		expect(saved.outputPath).toBe(target);
+		expect(await readFile(target, 'utf8')).toBe(contents);
+		expect(await readdir(state.root)).toEqual([longBase]);
+	});
+
+	it('truncates temporary names by whole Unicode code points', () => {
+		const suffix = 'a'.repeat(24);
+		const temporary = buildTemporaryExportName('é'.repeat(200), suffix);
+		expect(Buffer.byteLength(temporary, 'utf8')).toBeLessThanOrEqual(255);
+		expect(temporary.endsWith(`.${suffix}.tmp`)).toBe(true);
+		expect(temporary.startsWith('.')).toBe(true);
+		// No partial multi-byte character: re-encoding round-trips cleanly.
+		expect(Buffer.byteLength(temporary, 'utf8')).toBe(Buffer.from(temporary, 'utf8').length);
+		expect(temporary).toContain('é');
 	});
 });

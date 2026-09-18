@@ -243,6 +243,35 @@ async function unlinkIfSameFile(path: string, identity: Pick<Stats, 'dev' | 'ino
 	}
 }
 
+/** Maximum bytes for a single path component on common filesystems. */
+export const MAX_FILENAME_BYTES = 255;
+
+function truncateByCodePoints(value: string, maxBytes: number): string {
+	if (maxBytes <= 0) return '';
+	if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+	let result = '';
+	let used = 0;
+	for (const character of value) {
+		const length = Buffer.byteLength(character, 'utf8');
+		if (used + length > maxBytes) break;
+		result += character;
+		used += length;
+	}
+	return result;
+}
+
+/**
+ * Builds the same-directory temporary filename for an atomic export write.
+ * The complete component stays within 255 UTF-8 bytes by truncating the
+ * embedded basename by whole Unicode code points after reserving space for
+ * the leading dot, separator dot, and generated suffix.
+ */
+export function buildTemporaryExportName(baseName: string, randomSuffix: string): string {
+	const suffixPart = `${randomSuffix}.tmp`;
+	const maxBaseBytes = MAX_FILENAME_BYTES - 1 - 1 - Buffer.byteLength(suffixPart, 'utf8');
+	return `.${truncateByCodePoints(baseName, Math.max(0, maxBaseBytes))}.${suffixPart}`;
+}
+
 /** Local filesystem storage with same-directory temporary files and rename. */
 export class LocalExportStorage implements ExportStorage {
 	async save(request: SaveExportRequest): Promise<SavedExport> {
@@ -272,7 +301,8 @@ export class LocalExportStorage implements ExportStorage {
 			}
 		}
 
-		const temporaryName = `.${basename(target)}.${randomBytes(12).toString('hex')}.tmp`;
+		const randomSuffix = randomBytes(12).toString('hex');
+		const temporaryName = buildTemporaryExportName(basename(target), randomSuffix);
 		const temporaryAccessPath = join(accessParent, temporaryName);
 		let temporaryHandle: FileHandle | undefined;
 		let temporaryIdentity: Stats | undefined;

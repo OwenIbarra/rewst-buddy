@@ -11,6 +11,7 @@
  * is driven off that token metadata so any crate's option set is handled
  * without per-crate knowledge.
  */
+import { redactExportError } from '../export/exportObjects';
 
 /** Value(s) supplied for tokens, keyed by token name or token id. */
 export type TokenValues = Record<string, string | string[]>;
@@ -437,18 +438,7 @@ export function classifyUnpackEvent(
 	}
 
 	if (typeof event.error === 'string' && event.error.length > 0) {
-		let error = event.error;
-		for (const secret of redactionSecrets) {
-			if (secret) error = error.split(secret).join('[REDACTED]');
-		}
-		error = error
-			.replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
-			.replace(/\b(?:authorization|cookie|session|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, match => {
-				const separator = Math.max(match.indexOf('='), match.indexOf(':'));
-				return `${match.slice(0, separator + 1)}[REDACTED]`;
-			})
-			.slice(0, 1_000);
-		return { kind: 'failure', error };
+		return { kind: 'failure', error: redactExportError(event.error, redactionSecrets) };
 	}
 	if (event.__typename === 'UnpackCrateStreamSuccessResponse') {
 		if (event.didSucceed !== true) {

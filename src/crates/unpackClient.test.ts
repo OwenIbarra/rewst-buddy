@@ -210,13 +210,6 @@ suite('Unit: runUnpackCrate transport boundaries', () => {
 		});
 
 		test('forwards a stored header containing the region cookie verbatim in the websocket header', async () => {
-			// Regional-cookie rule (toCookieHeader in graphqlWsTransport.ts, shared by
-			// the export + unpack transports): a stored string is forwarded verbatim
-			// only when one of its ';'-separated pairs already names the region's
-			// cookieName ('test_cookie' in the mock region). Anything else — including
-			// a well-formed pair for a DIFFERENT region's cookie — is treated as a
-			// bare token and wrapped as `${cookieName}=${stored}` (see the wrap test
-			// below and the exportClient cookie cases for the shared rule).
 			for (const stored of ['test_cookie=session-token', 'other=value; test_cookie=session-token']) {
 				const server = await startFakeServer(ctrl => {
 					ctrl.success();
@@ -234,9 +227,7 @@ suite('Unit: runUnpackCrate transport boundaries', () => {
 		});
 
 		test('wraps a bare token in the region cookie name for the websocket header', async () => {
-			// mock region cookieName is 'test_cookie'. A stored string with no pair
-			// for the regional cookie — a bare token AND a pair for a foreign
-			// region's cookie — is wrapped as `${cookieName}=${stored}`.
+			// Cookies from another region are wrapped as well.
 			for (const stored of ['bare-token-123', 'appSession=session-token']) {
 				const server = await startFakeServer(ctrl => {
 					ctrl.success();

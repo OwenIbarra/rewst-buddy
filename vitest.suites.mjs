@@ -32,4 +32,6 @@ export const vitestSuites = [
 	'src/workflow/lint.test.ts',
 	'src/workflow/types.test.ts',
 	'src/crates/crateUnpack.test.ts',
+	'src/verifiedExportSchema.test.ts',
+	'src/codegen.schema.test.ts',
 ];

@@ -14,8 +14,15 @@ import { readdirSync, readFileSync } from 'fs';
 import * as Mocha from 'mocha';
 import { join } from 'path';
 import { WORKSPACE_TOOL_SPECS } from '../ui/chat/tools/workspaceTools';
+import type { CapabilityContext } from './Capability';
 import { CAPABILITY_REGISTRY, getCapability, mcpCapabilities } from './registry';
-import { RESULT_READ_TOOL_NAME } from './resultReadCapability';
+import {
+	MCP_MAX_OUTPUT_CHARS,
+	McpResultCache,
+	RESULT_READ_TOOL_NAME,
+	formatMcpOutput,
+	resultReadCapability,
+} from './resultReadCapability';
 
 const { suite, test, setup } = Mocha;
 
@@ -87,11 +94,32 @@ suite('Unit: capability registry', () => {
 	test('tool output bounding is centralized at the MCP/Buddy boundary, not identity formatters', () => {
 		const workflowTypes = readFileSync(join(process.cwd(), 'src/workflow/types.ts'), 'utf8');
 		const graphqlTool = readFileSync(join(process.cwd(), 'src/ui/chat/tools/graphqlTool.ts'), 'utf8');
-		const mcpActions = readFileSync(join(process.cwd(), 'packages/mcp-server/src/mcp/McpActions.ts'), 'utf8');
 
 		assert.doesNotMatch(workflowTypes, /function formatWorkflowOutput/);
 		assert.doesNotMatch(graphqlTool, /function formatResultText/);
-		assert.match(mcpActions, /formatMcpOutput\(params\.name, text,/);
+	});
+
+	test('oversized output is cached in McpResultCache and paged through buddy_result_read', async () => {
+		const cache = new McpResultCache();
+		const body = `target line one\n${'x'.repeat(MCP_MAX_OUTPUT_CHARS)}\ntarget line two\n`;
+		const formatted = formatMcpOutput('buddy_search_templates', body, cache);
+
+		const id = /"id":"([^"]+)"/.exec(formatted)?.[1];
+		assert.ok(id, 'oversized output returns a cached result id');
+		assert.strictEqual(cache.size, 1, 'oversized output is stored in McpResultCache');
+		assert.ok(formatted.startsWith(body.slice(0, MCP_MAX_OUTPUT_CHARS)));
+		assert.ok(formatted.includes(`"offset":${MCP_MAX_OUTPUT_CHARS}`));
+		assert.ok(formatted.includes(RESULT_READ_TOOL_NAME));
+
+		const ctx = { resultCache: cache } as unknown as CapabilityContext;
+		const page = await resultReadCapability.run({ id, offset: MCP_MAX_OUTPUT_CHARS }, ctx);
+		assert.ok(page.includes(`Cached result "${id}" (buddy_search_templates)`));
+		assert.ok(page.includes(`characters ${MCP_MAX_OUTPUT_CHARS}-`));
+		assert.ok(page.includes('target line two'));
+
+		const hits = await resultReadCapability.run({ id, search: 'target' }, ctx);
+		assert.ok(hits.includes('target line one'));
+		assert.ok(hits.includes('target line two'));
 	});
 
 	test('getCapability resolves by tool name', () => {
