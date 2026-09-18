@@ -91,7 +91,7 @@ suite('Unit: capability registry', () => {
 
 		assert.doesNotMatch(workflowTypes, /function formatWorkflowOutput/);
 		assert.doesNotMatch(graphqlTool, /function formatResultText/);
-		assert.match(mcpActions, /formatMcpOutput\(params\.name, text\)/);
+		assert.match(mcpActions, /formatMcpOutput\(params\.name, text,/);
 	});
 
 	test('getCapability resolves by tool name', () => {

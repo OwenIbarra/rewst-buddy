@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { editorDataOperations } from './editorData';
 import { editorSessionOperations } from './editorSessions';
 import { WorkingScopeManager } from './models/WorkingScopeManager';
@@ -14,6 +15,7 @@ export function scopeSnapshot() {
 const scopeMethods = new Set(['setOrgs', 'addOrgs', 'removeOrgs', 'setWorkflows', 'addWorkflows', 'removeWorkflows']);
 /** Only install on the private editor connection. Never expose as an agent tool. */
 export function createEditorTool(): ExtraTool {
+	const resultClientId = randomUUID();
 	return {
 		name: 'rewst_editor_operation',
 		description: 'Private editor operations',
@@ -63,9 +65,11 @@ export function createEditorTool(): ExtraTool {
 					arguments: args.arguments as Record<string, unknown> | undefined,
 					orgId: args.orgId as string | undefined,
 					origin: args.origin === 'chat' ? 'chat' : 'mcp',
+					signal: ctx.signal,
+					resultClientId,
 				});
 			if (operation === 'resources.list') return listResources();
-			if (operation === 'resources.read') return readResource(String(args.uri));
+			if (operation === 'resources.read') return readResource(String(args.uri), undefined, resultClientId);
 			throw new Error(`Unknown editor operation: ${operation}`);
 		},
 	};

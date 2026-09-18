@@ -223,3 +223,40 @@ clearly when no editor is attached.
 - **WHEN** the browser sends a valid session cookie through `addSession`
 - **THEN** the server validates and retains the session
 - **AND** public MCP tools can use it subject to the owner's scope and policy
+
+### Requirement: Read-only workflow export with optional local save
+
+The server SHALL expose `buddy_export_workflows` as a read capability that
+returns Rewst's signed export bundle unchanged, with signing intact. It SHALL
+verify every requested workflow id belongs to the requested organization before
+exporting and fail closed otherwise. When `outputPath` names an existing
+directory the server SHALL save under the server-recommended filename; pointing
+`outputPath` at the Downloads folder itself SHALL save inside a `Rewst Exports`
+subfolder, created when missing; local
+writes SHALL be atomic and never replace an existing file. Large bundles SHALL
+remain pageable through `buddy_result_read`.
+
+#### Scenario: Export then save a workflow bundle
+
+- **GIVEN** a valid session and a workflow id owned by the requested organization
+- **WHEN** a client exports that workflow with an `outputPath` under an approved local root
+- **THEN** the server returns the saved status with the unchanged signed bundle metadata
+- **AND** no Rewst state is changed
+
+### Requirement: Authenticated subscription transport boundaries
+
+The server SHALL origin-bind an explicitly configured `subscriptionsUrl` to its
+`graphqlUrl` so session cookies are never sent to an unexpected host, and
+subscription-backed tools SHALL honor caller cancellation.
+
+#### Scenario: Reject a cross-origin subscriptions endpoint
+
+- **GIVEN** a region whose explicit `subscriptionsUrl` names a different remote host than `graphqlUrl`
+- **WHEN** the server builds the subscription transport
+- **THEN** it rejects the configuration before sending any session cookie
+
+#### Scenario: Cancel a subscription-backed tool call
+
+- **GIVEN** a client call to a subscription-backed tool with an already-aborted signal
+- **WHEN** the tool runs
+- **THEN** it rejects with a cancellation error without calling the export or unpack transport

@@ -397,7 +397,7 @@ export function buildUnpackInput(crate: CrateDetail, opts: BuildUnpackOptions): 
 }
 
 export interface UnpackSuccess {
-	id?: string;
+	id: string;
 	orgId?: string;
 	type?: string;
 }
@@ -420,23 +420,47 @@ interface RawStreamEvent {
 }
 
 /**
- * Classifies one unpackCrate stream payload. A success-typed event that did
- * not succeed is a failure — didSucceed is authoritative over the typename.
+ * Classifies one unpackCrate stream payload. Only finished responses are
+ * terminal: intermediate success/failure-shaped payloads remain progress so
+ * the collector keeps consuming the subscription.
  */
-export function classifyUnpackEvent(payload: unknown): UnpackEvent | undefined {
+export function classifyUnpackEvent(
+	payload: unknown,
+	redactionSecrets: readonly string[] = [],
+): UnpackEvent | undefined {
 	if (payload === null || payload === undefined || typeof payload !== 'object') return undefined;
 	const event = payload as RawStreamEvent;
 
+	if (event.isFinished !== true) {
+		const label = optString(event.phase) ?? optString(event.__typename) ?? 'working';
+		return { kind: 'progress', label };
+	}
+
 	if (typeof event.error === 'string' && event.error.length > 0) {
-		return { kind: 'failure', error: event.error };
+		let error = event.error;
+		for (const secret of redactionSecrets) {
+			if (secret) error = error.split(secret).join('[REDACTED]');
+		}
+		error = error
+			.replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
+			.replace(/\b(?:authorization|cookie|session|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, match => {
+				const separator = Math.max(match.indexOf('='), match.indexOf(':'));
+				return `${match.slice(0, separator + 1)}[REDACTED]`;
+			})
+			.slice(0, 1_000);
+		return { kind: 'failure', error };
 	}
 	if (event.__typename === 'UnpackCrateStreamSuccessResponse') {
 		if (event.didSucceed !== true) {
 			return { kind: 'failure', error: 'Unpack reported it did not succeed.' };
 		}
+		const id = optString(event.id)?.trim();
+		if (!id) {
+			return { kind: 'failure', error: 'Unpack finished successfully without a valid unpacked id.' };
+		}
 		return {
 			kind: 'success',
-			id: optString(event.id),
+			id,
 			orgId: optString(event.orgId),
 			type: optString(event.type),
 		};
@@ -444,23 +468,35 @@ export function classifyUnpackEvent(payload: unknown): UnpackEvent | undefined {
 	if (event.didSucceed === false) {
 		return { kind: 'failure', error: 'Unpack failed without a server error message.' };
 	}
-	const label = optString(event.phase) ?? optString(event.__typename) ?? 'working';
-	return { kind: 'progress', label };
+	return { kind: 'failure', error: 'The unpack stream finished without a valid success response.' };
 }
 
 const TIMED_OUT = Symbol('timed-out');
+const CANCELLED = Symbol('cancelled');
 
-async function nextWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+async function nextWithControls<T>(
+	promise: Promise<T>,
+	ms: number,
+	signal?: AbortSignal,
+): Promise<T | typeof TIMED_OUT | typeof CANCELLED> {
+	if (signal?.aborted) return CANCELLED;
 	let timer: NodeJS.Timeout | undefined;
+	let onAbort: (() => void) | undefined;
 	try {
 		return await Promise.race([
 			promise,
 			new Promise<typeof TIMED_OUT>(resolve => {
 				timer = setTimeout(() => resolve(TIMED_OUT), ms);
 			}),
+			new Promise<typeof CANCELLED>(resolve => {
+				if (!signal) return;
+				onAbort = () => resolve(CANCELLED);
+				signal.addEventListener('abort', onAbort, { once: true });
+			}),
 		]);
 	} finally {
 		clearTimeout(timer);
+		if (onAbort) signal?.removeEventListener('abort', onAbort);
 	}
 }
 
@@ -472,6 +508,8 @@ export interface CollectUnpackOptions {
 	inactivityTimeoutMs?: number;
 	/** Tears down the underlying transport when the loop gives up waiting. */
 	abort?: () => void;
+	signal?: AbortSignal;
+	redactionSecrets?: readonly string[];
 	onProgress?: (label: string) => void;
 }
 
@@ -490,19 +528,26 @@ export async function collectUnpackOutcome(
 	try {
 		for (;;) {
 			const step = iterator.next();
-			const next = await nextWithTimeout(step, timeoutMs);
-			if (next === TIMED_OUT) {
+			let next: IteratorResult<unknown> | typeof TIMED_OUT | typeof CANCELLED;
+			try {
+				next = await nextWithControls(step, timeoutMs, options.signal);
+			} catch (error) {
+				if (options.signal?.aborted) throw new Error('Crate unpack was cancelled.');
+				throw error;
+			}
+			if (next === TIMED_OUT || next === CANCELLED) {
 				// The dangling next() settles (or rejects) once abort tears down
 				// the transport; swallow it to avoid unhandled rejections.
 				step.catch(() => {});
 				options.abort?.();
+				if (next === CANCELLED) throw new Error('Crate unpack was cancelled.');
 				throw new Error(`No unpack progress for ${Math.round(timeoutMs / 1000)}s; gave up.`);
 			}
 			if (next.done) {
 				throw new Error('The unpack stream ended without reporting success or failure.');
 			}
 
-			const event = classifyUnpackEvent(next.value);
+			const event = classifyUnpackEvent(next.value, options.redactionSecrets);
 			if (event === undefined) continue;
 			if (event.kind === 'success') {
 				return { id: event.id, orgId: event.orgId, type: event.type };
@@ -513,6 +558,7 @@ export async function collectUnpackOutcome(
 			options.onProgress?.(event.label);
 		}
 	} finally {
+		options.abort?.();
 		// Fire-and-forget: a source stalled mid-await would never settle return(),
 		// and the transport teardown (abort/dispose) is what actually frees it.
 		Promise.resolve(iterator.return?.(undefined)).catch(() => {});

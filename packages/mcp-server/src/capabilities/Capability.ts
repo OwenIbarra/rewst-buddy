@@ -1,5 +1,6 @@
 import type { Session } from '../sessions/index';
 import type { ToolSpec } from '../tools/toolProtocol';
+import type { McpResultCache } from './resultReadCapability';
 
 /**
  * A capability is one Rewst operation defined once and exposed on every surface
@@ -15,6 +16,16 @@ import type { ToolSpec } from '../tools/toolProtocol';
 
 export type CapabilityAccess = 'read' | 'write';
 
+/** Ownership attached to oversized MCP results before they enter the shared cache. */
+export interface ResultCacheScope {
+	/** One opaque id per connected MCP client/server instance. */
+	clientId: string;
+	/** The org named by the originating call, when the result is org-scoped. */
+	orgId?: string;
+	/** The authenticated session selected for the originating call. */
+	sessionIds: readonly string[];
+}
+
 /**
  * The session + org a capability handler runs against. The surface resolves and
  * validates the session before calling run, so handlers can assume it is live.
@@ -25,6 +36,12 @@ export interface CapabilityContext {
 	session: Session;
 	orgId: string;
 	sessions: Session[];
+	/** Optional request cancellation for subscription-backed tools (workflow export, crate unpack). */
+	signal?: AbortSignal;
+	/** Caller/session ownership used only for paging oversized MCP results. */
+	resultCacheScope?: ResultCacheScope;
+	/** Per-client cache supplied by the MCP connection boundary. */
+	resultCache?: McpResultCache;
 }
 
 export interface Capability {

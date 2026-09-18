@@ -18,6 +18,7 @@ export type Scalars = {
   JSON: { input: any; output: any; }
   /** Validated response value that can be a string (max 255 chars), number, boolean, or array of selection objects (max 20 items) */
   OnboardingQuestionnaireResponseValue: { input: any; output: any; }
+  Unknown: { input: any; output: any; }
   /** The `Upload` scalar type represents a file upload. */
   Upload: { input: any; output: any; }
   Void: { input: any; output: any; }
@@ -1319,7 +1320,7 @@ export type ExportErrorObject = {
   dependents: Array<ExportObjectIdentifier>;
   errors: Array<Scalars['String']['output']>;
   id: Scalars['ID']['output'];
-  paths: Array<Array<ExportObjectIdentifier>>;
+  paths: Array<Array<Scalars['Unknown']['output']>>;
   type: Scalars['String']['output'];
 };
 
@@ -1352,7 +1353,9 @@ export type ExportObjectsStreamEvent = ExportObjectsStreamFailureResponse | Expo
 
 export type ExportObjectsStreamFailureResponse = BaseStreamEvent & BaseStreamResponse & {
   __typename?: 'ExportObjectsStreamFailureResponse';
+  code?: Maybe<Scalars['String']['output']>;
   didSucceed: Scalars['Boolean']['output'];
+  error?: Maybe<Scalars['String']['output']>;
   failures: Array<ExportErrorObject>;
   isFinished: Scalars['Boolean']['output'];
 };

@@ -196,6 +196,19 @@
 						"Only writes are limited to the working scope; reads may target any org your sessions manage."
 					],
 					"description": "How the working scope constrains reads. 'strict' (default) scopes reads to the working orgs once one is pinned; 'writes' leaves reads cross-org and only gates writes."
+				},
+				"rewst-buddy.mcp.exportRoots": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"default": [],
+					"description": "Additional absolute directories approved for buddy_export_workflows local output. Downloads, active workspace folders, and the current Git checkout are approved automatically. Paths are resolved canonically to prevent traversal and symlink escapes."
+				},
+				"rewst-buddy.mcp.exportDefaultDir": {
+					"type": "string",
+					"default": "",
+					"description": "Default directory buddy_export_workflows saves to when no outputPath is given. Must be an absolute path; it is created when missing and automatically approved. Empty uses the cross-OS default (<home>/Downloads/Rewst Exports)."
 				}
 			}
 		},

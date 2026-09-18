@@ -59,6 +59,7 @@ function initializeEmbeddedBackend(): vscode.Disposable {
 		state: context.globalState,
 		secrets: context.secrets,
 		getSetting: (key, fallback) => vscode.workspace.getConfiguration(extPrefix).get(key, fallback),
+		workspaceRoots: () => vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath) ?? [],
 		log: (level, message, ...details) => {
 			log[level](message, ...details);
 		},

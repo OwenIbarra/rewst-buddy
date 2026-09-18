@@ -93,10 +93,29 @@ suite('Unit: session configuration boundaries', () => {
 			);
 		});
 
-		test('honors an explicitly configured subscriptions endpoint verbatim', () => {
+		test('honors an explicitly configured same-origin subscriptions endpoint verbatim', () => {
 			assert.strictEqual(
-				getSubscriptionsUrl(region({ subscriptionsUrl: 'wss://events.example.test/custom' })),
-				'wss://events.example.test/custom',
+				getSubscriptionsUrl(region({ subscriptionsUrl: 'wss://api.example.test/custom' })),
+				'wss://api.example.test/custom',
+			);
+		});
+
+		test('rejects an explicit subscriptions endpoint outside the GraphQL origin', () => {
+			// The session cookie is sent to the subscriptions URL, so a custom
+			// region cannot point it at another host or port. Loopback hosts
+			// stay interchangeable so local development can use an ephemeral port.
+			assert.throws(
+				() => getSubscriptionsUrl(region({ subscriptionsUrl: 'wss://events.example.test/custom' })),
+				/must share the graphqlUrl origin/,
+			);
+			assert.strictEqual(
+				getSubscriptionsUrl(
+					region({
+						graphqlUrl: 'http://localhost:4000/graphql',
+						subscriptionsUrl: 'ws://127.0.0.1:4001/subscriptions',
+					}),
+				),
+				'ws://127.0.0.1:4001/subscriptions',
 			);
 		});
 

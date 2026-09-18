@@ -71,6 +71,10 @@ const unpackCrateInputSchema = z.object({
 		),
 });
 
+function throwIfUnpackCancelled(signal?: AbortSignal): void {
+	if (signal?.aborted) throw new Error('Crate unpack was cancelled.');
+}
+
 /** One missing token, described richly enough to prompt or pick dynamically. */
 function describeToken(token: CrateTokenDetail): Record<string, unknown> {
 	const described: Record<string, unknown> = {
@@ -94,7 +98,7 @@ function describeToken(token: CrateTokenDetail): Record<string, unknown> {
 }
 
 async function fetchCrateDetail(ctx: CapabilityContext, crateId: string, orgId: string): Promise<CrateDetail> {
-	const data = await rawGraphqlOrThrow(ctx.session, CRATE_DETAIL_QUERY, { crateId, orgId });
+	const data = await rawGraphqlOrThrow(ctx.session, CRATE_DETAIL_QUERY, { crateId, orgId }, { signal: ctx.signal });
 	const crate = parseCrateDetail(data);
 	if (!crate) {
 		throw new Error(`Crate ${crateId} was not found or is not visible to this session.`);
@@ -103,6 +107,7 @@ async function fetchCrateDetail(ctx: CapabilityContext, crateId: string, orgId: 
 }
 
 async function runUnpackCrateCapability(input: Record<string, unknown>, ctx: CapabilityContext): Promise<string> {
+	throwIfUnpackCancelled(ctx.signal);
 	const parsed = parseCapabilityInput(unpackCrateInputSchema, input);
 	const { orgId, crateId, workflowName, enableTriggers } = parsed;
 	const tokenValues = parsed.tokenValues ?? {};
@@ -136,7 +141,8 @@ async function runUnpackCrateCapability(input: Record<string, unknown>, ctx: Cap
 	const summary = `Unpack crate "${crate.name}" (${crate.id}) into org "${orgName}" (${orgId}) as workflow "${unpackInput.workflow.name}"`;
 
 	return withMutationApproval(scope, summary, async () => {
-		const outcome = await unpackTransport({ session: ctx.session, input: unpackInput });
+		throwIfUnpackCancelled(ctx.signal);
+		const outcome = await unpackTransport({ session: ctx.session, input: unpackInput, signal: ctx.signal });
 		return json({
 			status: 'unpacked',
 			crateId: crate.id,

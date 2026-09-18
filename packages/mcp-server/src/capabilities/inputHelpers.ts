@@ -21,13 +21,17 @@ export function throwOnGraphqlErrors(errors: unknown): void {
 /**
  * Runs a raw GraphQL operation and throws with the serialized errors when the
  * response carries any, so a failure is never silently treated as empty data.
+ * An already-aborted signal rejects before the session is touched, so
+ * cancelled subscription-adjacent flows never issue the HTTP request.
  */
 export async function rawGraphqlOrThrow(
 	session: Session,
 	query: string,
 	variables?: Record<string, unknown>,
+	options?: { signal?: AbortSignal },
 ): Promise<unknown> {
-	const { data, errors } = await session.rawGraphql(query, variables);
+	if (options?.signal?.aborted) throw new Error('GraphQL request was cancelled.');
+	const { data, errors } = await session.rawGraphql(query, variables, options);
 	throwOnGraphqlErrors(errors);
 	return data;
 }

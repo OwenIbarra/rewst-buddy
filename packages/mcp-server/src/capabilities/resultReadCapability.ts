@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { ToolSpecDefinition } from '../tools/toolProtocol';
-import type { Capability } from './Capability';
+import type { Capability, ResultCacheScope } from './Capability';
 import { readCapability } from './capabilityFactories';
 import { optionalStringField, parseCapabilityInput, toInputSchema } from './inputHelpers';
 
@@ -9,6 +9,7 @@ export const RESULT_READ_TOOL_NAME = 'buddy_result_read';
 export const MCP_MAX_OUTPUT_CHARS = 24_000;
 
 const MCP_RESULT_CACHE_LIMIT_BYTES = 64 * 1024 * 1024;
+export const MCP_RESULT_CACHE_TTL_MS = 10 * 60 * 1_000;
 const DEFAULT_READ_LIMIT = 6_000;
 const MAX_READ_LIMIT = 8_000;
 const MAX_SEARCH_HITS = 50;
@@ -20,6 +21,8 @@ interface CacheEntry {
 	tool: string;
 	text: string;
 	bytes: number;
+	owner: ResultCacheScope;
+	expiresAt: number;
 }
 
 type StoreResult = { id: string } | { tooLarge: true; bytes: number };
@@ -27,21 +30,52 @@ type StoreResult = { id: string } | { tooLarge: true; bytes: number };
 export class McpResultCache {
 	private entries = new Map<string, CacheEntry>();
 	private totalBytes = 0;
+	private readonly localScope: ResultCacheScope = {
+		clientId: randomUUID(),
+		sessionIds: [randomUUID()],
+	};
 
-	constructor(private readonly limitBytes: number = MCP_RESULT_CACHE_LIMIT_BYTES) {}
+	constructor(
+		private readonly limitBytes: number = MCP_RESULT_CACHE_LIMIT_BYTES,
+		private readonly ttlMs: number = MCP_RESULT_CACHE_TTL_MS,
+	) {}
 
-	store(tool: string, text: string): StoreResult {
+	store(tool: string, text: string, owner: ResultCacheScope = this.localScope): StoreResult {
+		this.pruneExpired();
 		const bytes = Buffer.byteLength(text, 'utf8');
 		if (bytes > this.limitBytes) return { tooLarge: true, bytes };
 		while (this.totalBytes + bytes > this.limitBytes && this.entries.size > 0) this.evictOldest();
 		const id = this.freshId();
-		this.entries.set(id, { id, tool, text, bytes });
+		this.entries.set(id, {
+			id,
+			tool,
+			text,
+			bytes,
+			owner: { ...owner, sessionIds: [...owner.sessionIds] },
+			expiresAt: Date.now() + this.ttlMs,
+		});
 		this.totalBytes += bytes;
 		return { id };
 	}
 
-	get(id: string): CacheEntry | undefined {
-		return this.entries.get(id);
+	get(id: string, requester: ResultCacheScope = this.localScope): CacheEntry | undefined {
+		const entry = this.entries.get(id);
+		if (entry && entry.expiresAt <= Date.now()) {
+			this.deleteEntry(id, entry);
+			return undefined;
+		}
+		if (!entry || !sameOwner(entry.owner, requester)) return undefined;
+		return entry;
+	}
+
+	/** Resolve omitted paging scope without revealing metadata across clients. */
+	ownerOrgId(id: string, clientId: string): string | undefined {
+		const entry = this.entries.get(id);
+		if (entry && entry.expiresAt <= Date.now()) {
+			this.deleteEntry(id, entry);
+			return undefined;
+		}
+		return entry?.owner.clientId === clientId ? entry.owner.orgId : undefined;
 	}
 
 	get size(): number {
@@ -57,12 +91,22 @@ export class McpResultCache {
 		this.totalBytes = 0;
 	}
 
+	pruneExpired(now = Date.now()): void {
+		for (const [id, entry] of this.entries) {
+			if (entry.expiresAt <= now) this.deleteEntry(id, entry);
+		}
+	}
+
 	private evictOldest(): void {
 		const oldest = this.entries.keys().next().value as string | undefined;
 		if (oldest === undefined) return;
 		const entry = this.entries.get(oldest);
-		if (entry) this.totalBytes -= entry.bytes;
-		this.entries.delete(oldest);
+		if (entry) this.deleteEntry(oldest, entry);
+	}
+
+	private deleteEntry(id: string, entry: CacheEntry): void {
+		this.totalBytes -= entry.bytes;
+		this.entries.delete(id);
 	}
 
 	private freshId(): string {
@@ -74,13 +118,24 @@ export class McpResultCache {
 
 export const mcpResultCache = new McpResultCache();
 
-export function formatMcpOutput(toolName: string, text: string, cache: McpResultCache = mcpResultCache): string {
+function sameOwner(owner: ResultCacheScope, requester: ResultCacheScope): boolean {
+	if (owner.clientId !== requester.clientId || owner.orgId !== requester.orgId) return false;
+	const accessibleSessions = new Set(requester.sessionIds);
+	return owner.sessionIds.length > 0 && owner.sessionIds.every(sessionId => accessibleSessions.has(sessionId));
+}
+
+export function formatMcpOutput(
+	toolName: string,
+	text: string,
+	cache: McpResultCache = mcpResultCache,
+	owner?: ResultCacheScope,
+): string {
 	if (toolName === RESULT_READ_TOOL_NAME) return text;
 	if (text.length <= MCP_MAX_OUTPUT_CHARS) return text;
 
 	const preview = text.slice(0, MCP_MAX_OUTPUT_CHARS);
 	const bytes = Buffer.byteLength(text, 'utf8');
-	const stored = cache.store(toolName, text);
+	const stored = cache.store(toolName, text, owner);
 	if ('tooLarge' in stored) {
 		return [
 			preview,
@@ -88,11 +143,12 @@ export function formatMcpOutput(toolName: string, text: string, cache: McpResult
 		].join('\n');
 	}
 
+	const scopeArgument = owner?.orgId ? `,"orgId":${JSON.stringify(owner.orgId)}` : '';
 	return [
 		preview,
 		`...(output exceeded ${MCP_MAX_OUTPUT_CHARS} characters; the full result is cached in memory as id "${stored.id}" and is ${formatBytes(bytes)} (${bytes} bytes).)`,
-		`Continue with the ${RESULT_READ_TOOL_NAME} Buddy tool: {"id":"${stored.id}","offset":${preview.length}}`,
-		`Search cached result with the ${RESULT_READ_TOOL_NAME} Buddy tool: {"id":"${stored.id}","search":"<text>"}`,
+		`Continue with the ${RESULT_READ_TOOL_NAME} Buddy tool: {"id":"${stored.id}"${scopeArgument},"offset":${preview.length}}`,
+		`Search cached result with the ${RESULT_READ_TOOL_NAME} Buddy tool: {"id":"${stored.id}"${scopeArgument},"search":"<text>"}`,
 	].join('\n');
 }
 
@@ -109,6 +165,9 @@ const resultReadInputSchema = z.object({
 		.trim()
 		.min(1, { error: RESULT_READ_ID_ERROR })
 		.describe('Cached result id returned by an oversized Rewst Buddy tool result.'),
+	orgId: optionalStringField().describe(
+		'Organization id included in the paging instruction for an org-scoped cached result.',
+	),
 	// Note: id field intentionally uses a custom error message matching the legacy explicit check.
 	offset: z
 		.preprocess(optionalPagingNumber, z.number().optional())
@@ -129,10 +188,11 @@ const resultReadSpec: ToolSpecDefinition = {
 
 export const resultReadCapability: Capability = readCapability(
 	resultReadSpec,
-	async (input: Record<string, unknown>, _ctx): Promise<string> => {
+	async (input: Record<string, unknown>, ctx): Promise<string> => {
 		const parsed = parseCapabilityInput(resultReadInputSchema, input);
 		const id = parsed.id;
-		const entry = mcpResultCache.get(id);
+		const requester = ctx?.resultCacheScope ? { ...ctx.resultCacheScope, orgId: parsed.orgId } : undefined;
+		const entry = (ctx?.resultCache ?? mcpResultCache).get(id, requester);
 		if (!entry) {
 			throw new Error(
 				`No cached Rewst Buddy result for id "${id}". The in-memory cache may have evicted it or it may be absent; rerun the original tool to regenerate it.`,
@@ -144,16 +204,17 @@ export const resultReadCapability: Capability = readCapability(
 		const limit = clampInt(parsed.limit, 1, MAX_READ_LIMIT, DEFAULT_READ_LIMIT);
 		return sliceCachedOutput(entry, offset, limit);
 	},
-	{ requiresOrg: false },
+	{ requiresOrg: false, scopedSessions: true },
 );
 
 function sliceCachedOutput(entry: CacheEntry, offset: number, limit: number): string {
 	const end = Math.min(offset + limit, entry.text.length);
 	const chunk = entry.text.slice(offset, end);
 	const header = `Cached result "${entry.id}" (${entry.tool}), characters ${offset}-${end} of ${entry.text.length}.`;
+	const scopeArgument = entry.owner.orgId ? `,"orgId":${JSON.stringify(entry.owner.orgId)}` : '';
 	const footer =
 		end < entry.text.length
-			? `\n...(more; continue with ${RESULT_READ_TOOL_NAME}: {"id":"${entry.id}","offset":${end}})`
+			? `\n...(more; continue with ${RESULT_READ_TOOL_NAME}: {"id":"${entry.id}"${scopeArgument},"offset":${end}})`
 			: '\n(end of result)';
 	return `${header}\n\n${chunk}${footer}`;
 }

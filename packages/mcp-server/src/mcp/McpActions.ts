@@ -1,4 +1,5 @@
-import { getRuntimeWriteSettings } from '../host';
+import { randomUUID } from 'node:crypto';
+import { getRuntimeHost, getRuntimeWriteSettings } from '../host';
 import {
 	CAPABILITY_REGISTRY,
 	formatMcpOutput,
@@ -9,6 +10,7 @@ import {
 	type Capability,
 	type CapabilityContext,
 } from '../capabilities/index';
+import { mcpResultCache, RESULT_READ_TOOL_NAME, McpResultCache } from '../capabilities/resultReadCapability';
 import { WorkingScopeManager } from '../models/index';
 import { SessionManager, type Session } from '../sessions/index';
 import { log } from '../utils/index';
@@ -28,15 +30,38 @@ import { SlidingWindowThrottle } from './throttle';
 // An external agent can loop fast and each call hits a real org through the
 // user's cookie session, so cap MCP-originated calls independently of the chat.
 const THROTTLE = new SlidingWindowThrottle(30, 10_000);
+// Legacy function calls belong to the embedding host's direct client. Explicit
+// cache owners remain isolated; independent callers in one host use
+// McpActions instances, each with its own identity and cache.
+const directResultClients = new WeakMap<object, { id: string; cache: McpResultCache }>();
+
+function directResultClient(owner: object): { id: string; cache: McpResultCache } {
+	let client = directResultClients.get(owner);
+	if (!client) {
+		client = { id: randomUUID(), cache: owner instanceof McpResultCache ? owner : new McpResultCache() };
+		directResultClients.set(owner, client);
+	}
+	return client;
+}
 type AuditOutcome = 'ok' | 'approval_required' | `error:${McpErrorCode}`;
 
-/** Parameters for one tool call; orgId may also travel inside `arguments`. */
+/**
+ * Parameters for one tool call; orgId may also travel inside `arguments`.
+ * McpActions instances retain paging identity automatically. Legacy function
+ * calls without an explicit owner share the current runtime host's direct client.
+ */
 export interface CallToolParams {
 	name: string;
 	arguments?: Record<string, unknown>;
 	orgId?: string;
+	/** Optional cancellation for subscription-backed tools (buddy_export_workflows, buddy_unpack_crate), supplied by the caller. */
+	signal?: AbortSignal;
 	/** Who is calling, for the host approval wording. Defaults to an external MCP client. */
 	origin?: ApprovalOrigin;
+	/** Opaque identity of the connected MCP client, used to isolate oversized results. */
+	resultClientId?: string;
+	/** Cache owned by that MCP client connection. */
+	resultCache?: McpResultCache;
 }
 
 /** A single resource's text content. */
@@ -54,6 +79,21 @@ export class McpError extends Error {
 		super(message);
 		this.name = 'McpError';
 	}
+}
+
+/** One in-process caller; paging survives calls without retaining settings. */
+export class McpActions {
+	private readonly resultClientId = randomUUID();
+	private readonly resultCache = new McpResultCache();
+
+	readonly callTool = (params: CallToolParams, settings?: McpSettings): Promise<McpToolResult> =>
+		callTool({ ...params, resultClientId: this.resultClientId, resultCache: this.resultCache }, settings);
+
+	readonly readResource = (uri: string, settings?: McpSettings): Promise<ResourceContent> =>
+		readResource(uri, settings, this.resultClientId, this.resultCache);
+
+	readonly listTools = (settings?: McpSettings): McpToolDescriptor[] => listTools(settings);
+	readonly listResources = (settings?: McpSettings): McpResourceDescriptor[] => listResources(settings);
 }
 
 /**
@@ -228,6 +268,17 @@ export async function callRuntimeWriteTool(name: string, run: () => Promise<unkn
 	}
 }
 
+/** Subscription-backed tools whose websocket flow honors caller cancellation. */
+const CANCELLABLE_SUBSCRIPTION_TOOLS = new Set(['buddy_export_workflows', 'buddy_unpack_crate']);
+
+function cancellationMessage(toolName: string): string {
+	return toolName === 'buddy_unpack_crate' ? 'Crate unpack was cancelled.' : 'Workflow export was cancelled.';
+}
+
+function throwIfToolCancelled(signal: AbortSignal | undefined, toolName: string): void {
+	if (signal?.aborted) throw new Error(cancellationMessage(toolName));
+}
+
 /** Validates the session, attempting one refresh, before a capability runs. */
 async function ensureValidSession(session: Session): Promise<void> {
 	if (await session.validate()) return;
@@ -340,6 +391,31 @@ async function resolveContext(
 	return { session, orgId: orgId as string, sessions };
 }
 
+const sessionResultIds = new WeakMap<Session, string>();
+
+function resultSessionId(session: Session): string {
+	let id = sessionResultIds.get(session);
+	if (!id) {
+		id = randomUUID();
+		sessionResultIds.set(session, id);
+	}
+	return id;
+}
+
+function resultCacheScope(
+	capability: Capability,
+	ctx: CapabilityContext,
+	orgId: string | undefined,
+	clientId: string,
+): NonNullable<CapabilityContext['resultCacheScope']> {
+	return {
+		clientId,
+		orgId,
+		sessionIds:
+			capability.requiresOrg === false ? ctx.sessions.map(resultSessionId) : [resultSessionId(ctx.session)],
+	};
+}
+
 /**
  * The sessions a requiresOrg:false capability may touch: all of them, except
  * that a scopedSessions capability (org data read by globally unique id) under
@@ -368,20 +444,26 @@ export function listTools(settings: McpSettings = readMcpSettings()): McpToolDes
 	return exposedCapabilities(settings).map(describeTool);
 }
 
-export async function callTool(
-	params: CallToolParams,
-	settings: McpSettings = readMcpSettings(),
-): Promise<McpToolResult> {
+export async function callTool(params: CallToolParams, suppliedSettings?: McpSettings): Promise<McpToolResult> {
+	const settings = suppliedSettings ?? readMcpSettings();
 	const startedAt = Date.now();
 	let auditOrgId = '—';
 	let auditOutcome: AuditOutcome = 'ok';
 	try {
+		const directClient =
+			params.resultClientId === undefined
+				? directResultClient(params.resultCache ?? getRuntimeHost())
+				: undefined;
+		const resultClientId = params.resultClientId ?? directClient!.id;
+		const resultCache = params.resultCache ?? directClient?.cache ?? mcpResultCache;
 		const policy = getRuntimeWriteSettings();
 		const revision = policy?.revision;
 		const capability = getCapability(params.name);
 		if (!capability) {
 			throw new McpError('unknown_tool', `Unknown tool "${params.name}".`);
 		}
+		const signal = CANCELLABLE_SUBSCRIPTION_TOOLS.has(params.name) ? params.signal : undefined;
+		throwIfToolCancelled(signal, params.name);
 		if (capability.dangerous && !settings.enableDangerousGraphqlMutation) {
 			throw new McpError(
 				'write_disabled',
@@ -405,6 +487,11 @@ export async function callTool(
 		}
 
 		const args = params.arguments ?? {};
+		if (params.name === RESULT_READ_TOOL_NAME && !asString(args, 'orgId')) {
+			const id = asString(args, 'id');
+			const cachedOrgId = id ? resultCache.ownerOrgId(id, resultClientId) : undefined;
+			if (cachedOrgId) args.orgId = cachedOrgId;
+		}
 		const orgId = resolveOrgId(capability, args, params.orgId, settings);
 		auditOrgId =
 			capability.requiresOrg === false ? (capability.scopedSessions && orgId ? orgId : '—') : orgId || '—';
@@ -414,6 +501,9 @@ export async function callTool(
 		// trigger authenticated Rewst traffic.
 		assertScopeAllowed(capability, orgId ?? '', args, settings);
 		const ctx = await resolveContext(capability, args, orgId, settings);
+		if (signal) ctx.signal = signal;
+		ctx.resultCacheScope = resultCacheScope(capability, ctx, orgId, resultClientId);
+		ctx.resultCache = resultCache;
 		// Validate/refresh the session only after the scope gate passes, so an
 		// out-of-scope request triggers no authenticated Rewst traffic.
 		// Org-scoped capabilities always validate before network access. The
@@ -423,6 +513,7 @@ export async function callTool(
 		if (capability.requiresOrg !== false || capability.scopedSessions) {
 			await ensureValidSession(ctx.session);
 		}
+		throwIfToolCancelled(signal, params.name);
 		if (capability.access === 'write' && (getRuntimeWriteSettings() !== policy || policy?.revision !== revision)) {
 			throw new McpError(
 				'write_disabled',
@@ -437,10 +528,17 @@ export async function callTool(
 			const text = await runWithApprovalOrigin(params.origin ?? 'mcp', () =>
 				runCapability(capability, args, ctx),
 			);
+			throwIfToolCancelled(signal, params.name);
 			auditOutcome = auditOutcomeForText(text);
-			return { text: formatMcpOutput(params.name, text) };
+			return {
+				text: formatMcpOutput(params.name, text, ctx.resultCache ?? mcpResultCache, ctx.resultCacheScope),
+			};
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			const message = signal?.aborted
+				? cancellationMessage(params.name)
+				: error instanceof Error
+					? error.message
+					: String(error);
 			auditOutcome = `error:${error instanceof McpError ? error.code : 'graphql_error'}`;
 			// A capability that throws is a tool-execution failure the agent should
 			// see, not a transport error; surface it as an isError result.
@@ -500,7 +598,14 @@ function parseResourceUri(uri: string): ParsedResourceUri | undefined {
 	return { orgId: match[1], collection: match[2] as 'templates' | 'workflows', id: match[3] };
 }
 
-export async function readResource(uri: string, settings: McpSettings = readMcpSettings()): Promise<ResourceContent> {
+export async function readResource(
+	uri: string,
+	suppliedSettings?: McpSettings,
+	resultClientId?: string,
+	resultCache?: McpResultCache,
+): Promise<ResourceContent> {
+	const settings = suppliedSettings ?? readMcpSettings();
+	const directClient = resultClientId === undefined ? directResultClient(resultCache ?? getRuntimeHost()) : undefined;
 	const parsed = parseResourceUri(uri);
 	if (!parsed) {
 		throw new McpError('invalid_request', `Unrecognized resource URI: ${uri}`);
@@ -536,8 +641,15 @@ export async function readResource(uri: string, settings: McpSettings = readMcpS
 	// authenticated Rewst traffic.
 	assertScopeAllowed(capability, orgId ?? '', args, settings);
 	const ctx = await resolveContext(capability, args, orgId, settings);
+	ctx.resultCacheScope = resultCacheScope(capability, ctx, orgId, resultClientId ?? directClient!.id);
+	ctx.resultCache = resultCache ?? directClient?.cache;
 	await ensureValidSession(ctx.session);
-	const text = formatMcpOutput(toolName, await runCapability(capability, args, ctx));
+	const text = formatMcpOutput(
+		toolName,
+		await runCapability(capability, args, ctx),
+		ctx.resultCache ?? mcpResultCache,
+		ctx.resultCacheScope,
+	);
 	log.info(`MCP readResource: ${uri}`);
 	return { uri, mimeType: 'text/plain', text };
 }
