@@ -74,6 +74,15 @@ describe('local signed-bundle storage', () => {
 		expect(link).toHaveBeenCalledTimes(1);
 	});
 
+	it('ignores unresolvable configured roots and still approves the remaining candidates', async () => {
+		const notADirectory = join(sandbox, 'not-a-directory');
+		await writeFile(notADirectory, 'fixture');
+		state.settings['mcp.exportRoots'] = [join(notADirectory, 'child'), join(sandbox, 'missing-root')];
+		const target = join(state.root, 'export.json');
+		expect((await save(target)).outputPath).toBe(target);
+		expect(await readFile(target, 'utf8')).toBe(contents);
+	});
+
 	it('rejects destinations outside approved roots and traversal through a sibling directory', async () => {
 		const sibling = join(sandbox, 'approved-sibling');
 		await mkdir(sibling);

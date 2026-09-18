@@ -34,6 +34,9 @@ let exportTransport: ExportTransport = runExportObjects;
 let exportStorage: ExportStorage = new LocalExportStorage();
 let defaultExportDir: () => Promise<string> = ensureDefaultExportDir;
 
+/** Upper bound on workflows per export; keeps per-id owner checks and the bundle bounded. */
+export const MAX_WORKFLOWS_PER_EXPORT = 25;
+
 /** Replaces external boundaries in unit tests; omit either argument to restore it. */
 export function _setWorkflowExportDependenciesForTesting(dependencies?: {
 	transport?: ExportTransport;
@@ -52,7 +55,12 @@ const workflowExportInputSchema = z.object({
 			error: '"workflowIds" must be a non-empty array of workflow id strings.',
 		})
 		.min(1, { error: '"workflowIds" must contain at least one workflow id.' })
-		.describe('One or more workflow ids to export. Values are trimmed and duplicates are removed.'),
+		.max(MAX_WORKFLOWS_PER_EXPORT, {
+			error: `"workflowIds" must contain at most ${MAX_WORKFLOWS_PER_EXPORT} workflow ids.`,
+		})
+		.describe(
+			`One or more workflow ids to export, up to ${MAX_WORKFLOWS_PER_EXPORT}. Values are trimmed and duplicates are removed.`,
+		),
 	outputPath: z
 		.string()
 		.trim()

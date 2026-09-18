@@ -195,8 +195,9 @@ session lifetime. A stateless client is isolated by its HTTP keep-alive
 connection, so it must issue the original tool call and paging calls on the
 same connection; reconnecting loses access to those entries. This connection
 binding is the strongest client identity available when the stateless protocol
-provides no session id. Entries expire after 10 minutes and the process-wide
-cache is capped at 64 MiB.
+provides no session id. Entries expire after 10 minutes and each
+McpResultCache instance is capped at 64 MiB (the HTTP, McpActions, and MCP
+server paths keep separate caches).
 
 ## Working scope and writes
 

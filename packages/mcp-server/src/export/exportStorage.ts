@@ -66,8 +66,10 @@ async function approvedExportRoots(): Promise<string[]> {
 		try {
 			const canonical = await realpath(candidate);
 			if ((await stat(canonical)).isDirectory()) approved.add(canonical);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+		} catch {
+			// Unreadable, missing, or unresolvable candidates are skipped so
+			// one bad root cannot block the remaining candidates.
+			continue;
 		}
 	}
 	return [...approved];

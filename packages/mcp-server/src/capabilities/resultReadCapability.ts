@@ -182,7 +182,7 @@ const resultReadInputSchema = z.object({
 const resultReadSpec: ToolSpecDefinition = {
 	name: RESULT_READ_TOOL_NAME,
 	description:
-		'Pages or searches an oversized cached Rewst Buddy result by id. The cache is in-memory only; an id can be evicted under memory pressure, so rerun the original tool if it is gone.',
+		'Pages or searches an oversized cached Rewst Buddy result by id. The cache is in-memory only; cached result ids expire after 10 minutes and can be evicted earlier under memory pressure, so rerun the original tool when an id is unavailable.',
 	inputSchema: toInputSchema(resultReadInputSchema),
 };
 

@@ -232,7 +232,10 @@ verify every requested workflow id belongs to the requested organization before
 exporting and fail closed otherwise. When `outputPath` names an existing
 directory the server SHALL save under the server-recommended filename; pointing
 `outputPath` at the Downloads folder itself SHALL save inside a `Rewst Exports`
-subfolder, created when missing; local
+subfolder, created when missing; when `outputPath` is omitted the server SHALL
+save under `rewst-buddy.mcp.exportDefaultDir`, falling back to
+`<home>/Downloads/Rewst Exports` when empty, creating the directory when
+missing; local
 writes SHALL be atomic and never replace an existing file. Large bundles SHALL
 remain pageable through `buddy_result_read`.
 

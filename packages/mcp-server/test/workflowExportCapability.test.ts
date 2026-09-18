@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CapabilityContext } from '../src/capabilities/Capability';
 import { getCapability } from '../src/capabilities/registry';
-import { _setWorkflowExportDependenciesForTesting } from '../src/capabilities/workflowExportCapability';
+import {
+	MAX_WORKFLOWS_PER_EXPORT,
+	_setWorkflowExportDependenciesForTesting,
+} from '../src/capabilities/workflowExportCapability';
 import type { ExportBundle } from '../src/export/exportObjects';
 import type Session from '../src/sessions/Session';
 
@@ -262,6 +265,44 @@ describe('workflowExportCapability', () => {
 			capability.run({ orgId: ORG_ID, workflowIds: ['wf-1'] }, { ...ctx, signal: controller.signal }),
 		).rejects.toThrow(/cancelled/i);
 		expect(rawGraphql).not.toHaveBeenCalled();
+		expect(transport).not.toHaveBeenCalled();
+		expect(storage.save).not.toHaveBeenCalled();
+	});
+
+	it(`accepts exactly ${MAX_WORKFLOWS_PER_EXPORT} workflow ids`, async () => {
+		const ids = Array.from({ length: MAX_WORKFLOWS_PER_EXPORT }, (_, index) => `wf-${index}`);
+		const owners = Object.fromEntries(ids.map(id => [id, { id, orgId: ORG_ID }]));
+		const { ctx } = installSession(owners);
+		const transport = vi.fn(async () => outcomeFixture);
+		const storage = {
+			save: vi.fn(async () => ({ outputPath: '/abs/default-exports/workflow.bundle.json', bytes: 1 })),
+		};
+		_setWorkflowExportDependenciesForTesting({
+			transport,
+			storage,
+			defaultDir: async () => '/abs/default-exports',
+		});
+		const capability = getCapability('buddy_export_workflows');
+		if (!capability) throw new Error('Expected buddy_export_workflows capability');
+
+		const result = JSON.parse(await capability.run({ orgId: ORG_ID, workflowIds: ids }, ctx));
+
+		expect(result.workflowIds).toEqual(ids);
+		expect(transport).toHaveBeenCalledTimes(1);
+	});
+
+	it(`rejects more than ${MAX_WORKFLOWS_PER_EXPORT} workflow ids without calling transport or storage`, async () => {
+		const { ctx } = installSession({});
+		const transport = vi.fn(async () => outcomeFixture);
+		const storage = { save: vi.fn(async () => ({ outputPath: '/abs/out.json', bytes: 1 })) };
+		_setWorkflowExportDependenciesForTesting({ transport, storage });
+		const capability = getCapability('buddy_export_workflows');
+		if (!capability) throw new Error('Expected buddy_export_workflows capability');
+		const ids = Array.from({ length: MAX_WORKFLOWS_PER_EXPORT + 1 }, (_, index) => `wf-${index}`);
+
+		await expect(capability.run({ orgId: ORG_ID, workflowIds: ids }, ctx)).rejects.toThrow(
+			`at most ${MAX_WORKFLOWS_PER_EXPORT} workflow ids`,
+		);
 		expect(transport).not.toHaveBeenCalled();
 		expect(storage.save).not.toHaveBeenCalled();
 	});

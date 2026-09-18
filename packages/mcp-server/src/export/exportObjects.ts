@@ -149,8 +149,8 @@ export function redactExportError(value: unknown, secrets: readonly string[] = [
 		.replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, '[REDACTED]')
 		.replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
 		.replace(
-			/\b[\w.-]*(?:authorization|cookie|session|token|secret|password|signature|certificate|privatekey|private-key|signing)[\w.-]*\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
-			match => `${match.slice(0, Math.max(match.indexOf('='), match.indexOf(':')) + 1)}[REDACTED]`,
+			/(\b[\w.-]*(?:authorization|cookie|session|token|secret|password|signature|certificate|privatekey|private-key|signing)[\w.-]*\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+			'$1[REDACTED]',
 		)
 		.replace(/\b[A-Za-z0-9+/]{48,}={0,2}\b/g, '[REDACTED]');
 	message = [...message]

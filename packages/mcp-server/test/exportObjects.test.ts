@@ -2,7 +2,12 @@ import { readFileSync } from 'node:fs';
 import { buildASTSchema, Kind, parse, print, validate, visit } from 'graphql';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { applyVerifiedExportContract } from '../../../src/verifiedExportSchema';
-import { classifyExportEvent, collectExportOutcome, EXPORT_OBJECTS_SUBSCRIPTION } from '../src/export/exportObjects';
+import {
+	classifyExportEvent,
+	collectExportOutcome,
+	EXPORT_OBJECTS_SUBSCRIPTION,
+	redactExportError,
+} from '../src/export/exportObjects';
 
 const bundle = {
 	version: 2,
@@ -91,6 +96,26 @@ describe('verified export subscription contract', () => {
 		expect(subscription.fields?.filter(field => field.name.value !== 'exportObjects')).toEqual(
 			original.fields?.filter(field => field.name.value !== 'exportObjects'),
 		);
+	});
+});
+
+describe('export error redaction', () => {
+	it('conceals the full value when an equals-separated secret contains colons', () => {
+		const redacted = redactExportError('request failed: api_token= secret:with:colons');
+		expect(redacted).toBe('request failed: api_token= [REDACTED]');
+		expect(redacted).not.toContain('secret');
+	});
+
+	it('conceals the full value when a colon-separated secret contains colons', () => {
+		const redacted = redactExportError('request failed: session: abc:def:ghi');
+		expect(redacted).toBe('request failed: session: [REDACTED]');
+		expect(redacted).not.toContain('abc');
+	});
+
+	it('conceals quoted values containing colons while preserving the key prefix', () => {
+		const redacted = redactExportError('denied for authorization="bearer:abc:123"');
+		expect(redacted).toBe('denied for authorization=[REDACTED]');
+		expect(redacted).not.toContain('bearer');
 	});
 });
 
