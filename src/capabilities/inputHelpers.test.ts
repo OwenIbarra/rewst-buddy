@@ -98,6 +98,36 @@ suite('Unit: inputHelpers — rawGraphqlOrThrow', () => {
 		await rawGraphqlOrThrow(session, 'query {}', { orgId: 'abc' });
 		assert.deepStrictEqual(capturedVars, { orgId: 'abc' });
 	});
+
+	test('rejects without calling rawGraphql when the signal is already aborted', async () => {
+		let calls = 0;
+		const session = {
+			rawGraphql: async () => {
+				calls++;
+				return { data: {}, errors: null };
+			},
+		} as unknown as import('../../packages/mcp-server/src/sessions').Session;
+		const controller = new AbortController();
+		controller.abort();
+		await assert.rejects(
+			rawGraphqlOrThrow(session, 'query {}', { orgId: 'abc' }, { signal: controller.signal }),
+			/cancelled/,
+		);
+		assert.strictEqual(calls, 0, 'a pre-aborted signal must not issue the HTTP request');
+	});
+
+	test('forwards a live signal to rawGraphql', async () => {
+		let capturedOptions: unknown;
+		const session = {
+			rawGraphql: async (_q: string, _vars?: unknown, options?: unknown) => {
+				capturedOptions = options;
+				return { data: {}, errors: null };
+			},
+		} as unknown as import('../../packages/mcp-server/src/sessions').Session;
+		const controller = new AbortController();
+		await rawGraphqlOrThrow(session, 'query {}', undefined, { signal: controller.signal });
+		assert.deepStrictEqual(capturedOptions, { signal: controller.signal });
+	});
 });
 
 suite('Unit: inputHelpers — requireResourceInOrg', () => {

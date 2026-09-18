@@ -2,9 +2,26 @@ import { context, EventEmitter, getRuntimeHost, log } from '../host';
 import { getSdk, type Sdk, type SdkFunctionWrapper } from './graphql/sdk';
 import { GraphQLClient } from 'graphql-request';
 import CookieString from './CookieString';
-import { getRegionConfigs, type RegionConfig } from './RegionConfig';
+import { assertSecureRegionConfig, getRegionConfigs, type RegionConfig } from './RegionConfig';
 import type SessionProfile from './SessionProfile';
 import { createRetryWrapper } from './retryWrapper';
+
+/**
+ * Converts Set-Cookie response values into the credential form stored by the
+ * session. Attribute-free cookie strings and opaque tokens are retained
+ * exactly; Set-Cookie attributes are never persisted into a Cookie header.
+ */
+export function refreshedCookieValue(values: readonly string[], cookieName: string): string | undefined {
+	const candidates = values.map(value => value.trim()).filter(Boolean);
+	for (const candidate of candidates) {
+		const pair = candidate.split(';', 1)[0].trim();
+		const equals = pair.indexOf('=');
+		if (equals > 0 && pair.slice(0, equals).trim() === cookieName) return pair;
+	}
+	const first = candidates[0];
+	if (candidates.length !== 1 || !first) return undefined;
+	return first.includes(';') ? first.split(';', 1)[0].trim() : first;
+}
 
 export default class Session {
 	private static readonly MAX_REFRESH_FAILURES = 3;
@@ -30,6 +47,7 @@ export default class Session {
 	}
 
 	private static newSdkAtRegion(cookieString: CookieString, config: RegionConfig): Sdk {
+		assertSecureRegionConfig(config);
 		log.trace('newSdkAtRegion: creating SDK', { region: config.name, url: config.graphqlUrl });
 
 		const client = Session.createClient(config.graphqlUrl, cookieString.value);
@@ -176,7 +194,7 @@ export default class Session {
 	private async performRefresh(): Promise<void> {
 		log.trace('refreshToken: starting', { label: this.profile.label, orgId: this.profile.org.id });
 
-		const config = this.profile.region;
+		const config = assertSecureRegionConfig(this.profile.region);
 		try {
 			const oldCookies = await this.getCookiesForRefresh();
 
@@ -194,7 +212,9 @@ export default class Session {
 				throw log.error(`refreshToken: failed with status ${response.status}`);
 			}
 
-			const cookieString = response.headers.get('set-cookie');
+			const getSetCookie = (response.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
+			const setCookieValues = getSetCookie?.call(response.headers) ?? [response.headers.get('set-cookie') ?? ''];
+			const cookieString = refreshedCookieValue(setCookieValues, config.cookieName);
 			if (!cookieString) {
 				throw log.error('refreshToken: missing set-cookie header');
 			}
@@ -288,16 +308,26 @@ export default class Session {
 	 * Executes an arbitrary GraphQL document against this session's region
 	 * endpoint, authenticated with the stored session cookie. Used by the
 	 * dedicated GraphQL MCP capabilities; the extension's own operations use
-	 * the typed SDK.
+	 * the typed SDK. The optional signal aborts the HTTP request (and rejects
+	 * before any request when already aborted) for subscription-adjacent flows.
 	 */
 	public async rawGraphql(
 		query: string,
 		variables?: Record<string, unknown>,
+		options?: { signal?: AbortSignal },
 	): Promise<{ data?: unknown; errors?: unknown }> {
+		if (options?.signal?.aborted) throw new Error('GraphQL request was cancelled.');
 		const cookie = await this.getCookies();
-		const client = Session.createClient(this.profile.region.graphqlUrl, cookie);
+		const config = assertSecureRegionConfig(this.profile.region);
+		const client = Session.createClient(config.graphqlUrl, cookie);
 		const wrapper = createRetryWrapper();
-		const { data, errors } = await wrapper(() => client.rawRequest(query, variables), 'rawGraphql');
+		const { data, errors } = await wrapper(
+			() =>
+				options?.signal
+					? client.rawRequest({ query, variables, signal: options.signal })
+					: client.rawRequest(query, variables),
+			'rawGraphql',
+		);
 		return { data, errors };
 	}
 

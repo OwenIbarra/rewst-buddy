@@ -23,6 +23,8 @@ export interface RuntimeHost {
 	log(level: LogLevel, message: string, ...details: unknown[]): void;
 	notify?(level: 'info' | 'warn' | 'error', message: string): void;
 	requestToken?(): Promise<string>;
+	/** Trusted workspace roots supplied by an embedding editor. */
+	workspaceRoots?(): readonly string[];
 	sessionExpired?(label: string): void;
 	templateChanged?(template: { id: string; name: string; updatedAt?: string | null }): void;
 }

@@ -27,6 +27,7 @@ export {
 } from './workingScopeCapability';
 export {
 	MCP_MAX_OUTPUT_CHARS,
+	McpResultCache,
 	RESULT_READ_TOOL_NAME,
 	_resetMcpResultCacheForTesting,
 	formatMcpOutput,

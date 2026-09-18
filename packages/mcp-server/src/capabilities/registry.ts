@@ -20,6 +20,7 @@ import { TRIGGER_FORM_CAPABILITIES } from './triggerFormCapabilities';
 import { TRIGGER_MUTATE_CAPABILITIES } from './triggerMutateCapabilities';
 import { TRIGGER_TAG_CAPABILITIES } from './triggerTagCapabilities';
 import { WORKFLOW_CRUD_CAPABILITIES } from './workflowCrudCapabilities';
+import { workflowExportCapability } from './workflowExportCapability';
 import { workflowImpactCapability } from './workflowImpactCapability';
 import {
 	deleteWorkflowInputProfileCapability,
@@ -55,6 +56,7 @@ export const CAPABILITY_REGISTRY: Capability[] = [
 	...JINJA_DOCS_CAPABILITIES,
 	...CRATE_CAPABILITIES,
 	crateUnpackCapability,
+	workflowExportCapability,
 	workflowImpactCapability,
 	workflowLintCapability,
 	saveWorkflowInputProfileCapability,

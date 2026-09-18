@@ -189,6 +189,16 @@ The HTTP server binds only to loopback and rejects forwarded requests, unknown
 Host headers, and non-loopback browser origins. It is not a remote or LAN
 deployment endpoint.
 
+Oversized tool results are cached in memory for paging with
+`buddy_result_read`. Stateful HTTP sessions retain their private cache for the
+session lifetime. A stateless client is isolated by its HTTP keep-alive
+connection, so it must issue the original tool call and paging calls on the
+same connection; reconnecting loses access to those entries. This connection
+binding is the strongest client identity available when the stateless protocol
+provides no session id. Entries expire after 10 minutes and each
+McpResultCache instance is capped at 64 MiB (the HTTP, McpActions, and MCP
+server paths keep separate caches).
+
 ## Working scope and writes
 
 Read tools, including `buddy_graphql_query`, are available by default. The raw
@@ -254,6 +264,49 @@ VS Code actions use host approval regardless of this legacy setting. Scope
 changes still validate organization and workflow membership before applying.
 The MCP server does not expose arbitrary shell-command execution.
 
+### Local workflow export paths
+
+`buddy_export_workflows` is read-only in Rewst, but its optional `outputPath`
+writes the returned signed bundle to the local machine. Local output is limited
+to the user's Downloads directory, active editor workspace folders, the Git
+checkout containing the server's current directory, and additional absolute
+directories explicitly listed in `rewst-buddy.mcp.exportRoots`. Parent
+directories for explicit `outputPath` values must already exist; the default
+`<home>/Downloads/Rewst Exports` folder is created when missing. Rewst Buddy resolves roots and destination
+parents canonically, rejecting path traversal and symlink-directory escapes.
+It also holds the destination directory open, creates temporary files with
+no-follow/exclusive flags, validates file and directory identities before and
+after publication, and uses descriptor-relative paths on Linux. Node does not
+expose portable `openat`/`linkat` APIs; on macOS and Windows the final hard-link
+operation remains path-based with identity checks immediately around it. Avoid
+export roots whose parent directories are writable by untrusted local users.
+The read-only export tool never replaces an existing file: `overwrite` must be
+`false`, and callers must choose a new path when a target already exists. An
+explicit file path is used exactly as supplied, including its extension. The
+server appends `.json` only to a sanitized server-recommended filename when
+`outputPath` names an existing directory. Pointing `outputPath` at the Downloads
+folder itself saves inside a `Rewst Exports` subfolder, created when missing, so
+bundles do not scatter across the top level. The Rewst operation itself is
+read-only: the returned bundle keeps Rewst's signing intact and is never
+rewritten. Large bundles stay pageable with `buddy_result_read`, and in-flight
+exports can be cancelled. Only local-disk storage exists today; the storage
+interface is extensible to future remote destinations.
+
+Standalone `--config` files may set the same additional roots with the nested
+form below:
+
+```json
+{
+	"mcp": {
+		"exportRoots": ["/absolute/path/to/exports"]
+	}
+}
+```
+
+For compatibility, top-level `exportRoots` and the fully qualified
+`rewst-buddy.mcp.exportRoots` key are also accepted. Configure only one form.
+The safe default is an empty additional-root list.
+
 ## Sharing with VS Code
 
 The default port is 27121 for the standalone package, the VS Code extension,
@@ -312,6 +365,13 @@ a JSON object containing a non-empty `regions` array:
 ```
 
 `subscriptionsUrl` is optional and is derived from `graphqlUrl` when omitted.
+An explicit `subscriptionsUrl` must use the websocket scheme matching
+`graphqlUrl` (wss for https, ws for http) on the same host and port, except
+that loopback hosts are interchangeable for local development.
+Because these endpoints receive authenticated session cookies, configured
+`graphqlUrl` and `loginUrl` values must use HTTPS and `subscriptionsUrl` must
+use WSS. Plain HTTP/WS is accepted only for the literal local development hosts
+`localhost`, `127.0.0.0/8`, and `::1`; arbitrary plaintext hosts are rejected.
 
 ## Troubleshooting
 

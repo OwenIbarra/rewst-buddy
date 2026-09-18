@@ -209,33 +209,39 @@ suite('Unit: runUnpackCrate transport boundaries', () => {
 			await server.socketClosed; // finally teardown disposes the client on success
 		});
 
-		test('forwards a name=value cookie string verbatim in the websocket header', async () => {
-			const server = await startFakeServer(ctrl => {
-				ctrl.success();
-				ctrl.complete();
-			});
-			const { session } = createMockSession();
-			stubCookies(session, 'appSession=session-token');
-			pointSessionAt(session, server.url);
+		test('forwards a stored header containing the region cookie verbatim in the websocket header', async () => {
+			for (const stored of ['test_cookie=session-token', 'other=value; test_cookie=session-token']) {
+				const server = await startFakeServer(ctrl => {
+					ctrl.success();
+					ctrl.complete();
+				});
+				const { session } = createMockSession();
+				stubCookies(session, stored);
+				pointSessionAt(session, server.url);
 
-			await runUnpackCrate({ session, input });
+				await runUnpackCrate({ session, input });
 
-			assert.strictEqual(server.cookies[0], 'appSession=session-token');
+				assert.strictEqual(server.cookies[0], stored, `expected verbatim forwarding of ${stored}`);
+				await server.socketClosed;
+			}
 		});
 
 		test('wraps a bare token in the region cookie name for the websocket header', async () => {
-			const server = await startFakeServer(ctrl => {
-				ctrl.success();
-				ctrl.complete();
-			});
-			const { session } = createMockSession();
-			// mock region cookieName is 'test_cookie'; a bare token has no '='.
-			stubCookies(session, 'bare-token-123');
-			pointSessionAt(session, server.url);
+			// Cookies from another region are wrapped as well.
+			for (const stored of ['bare-token-123', 'appSession=session-token']) {
+				const server = await startFakeServer(ctrl => {
+					ctrl.success();
+					ctrl.complete();
+				});
+				const { session } = createMockSession();
+				stubCookies(session, stored);
+				pointSessionAt(session, server.url);
 
-			await runUnpackCrate({ session, input });
+				await runUnpackCrate({ session, input });
 
-			assert.strictEqual(server.cookies[0], 'test_cookie=bare-token-123');
+				assert.strictEqual(server.cookies[0], `test_cookie=${stored}`);
+				await server.socketClosed;
+			}
 		});
 
 		test('throws with the GraphQL errors and tears down when a payload carries errors', async () => {

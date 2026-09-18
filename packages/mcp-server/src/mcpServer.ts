@@ -1,4 +1,5 @@
 import { getRuntimeWriteSettings } from './host';
+import { randomUUID } from 'node:crypto';
 import { onCapabilityCatalogChanged } from './capabilities/registry';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
@@ -13,6 +14,7 @@ import { callRuntimeWriteTool, callTool, listResources, listTools, McpError, rea
 import { buildMcpInstructions, MCP_PROMPTS, renderMcpPrompt } from './mcp/instructions';
 import { MCP_PROTOCOL_VERSION } from './mcp/protocol';
 import { readMcpSettings } from './mcp/settings';
+import { McpResultCache } from './capabilities/resultReadCapability';
 
 declare const __PACKAGE_VERSION__: string;
 
@@ -28,6 +30,10 @@ export interface ExtraTool {
 
 export interface McpServerOptions {
 	extraTools?: ExtraTool[];
+	/** Shared by an HTTP boundary whose stateless requests create short-lived servers. */
+	resultCache?: McpResultCache;
+	/** Stable opaque owner id for the MCP session or HTTP connection. */
+	resultClientId?: string;
 }
 
 const SERVER_INFO = {
@@ -77,6 +83,9 @@ function assertUniqueExtraTools(extraTools: ExtraTool[]): void {
 
 /** Create a low-level SDK server. The caller owns its transport lifecycle. */
 export function createMcpServer(options: McpServerOptions = {}): Server {
+	const resultClientId = options.resultClientId ?? randomUUID();
+	const ownsResultCache = options.resultCache === undefined;
+	const resultCache = options.resultCache ?? new McpResultCache();
 	const writeSettings = getRuntimeWriteSettings();
 	const extraTools = [...(writeSettings?.tools() ?? []), ...(options.extraTools ?? [])];
 	assertUniqueExtraTools(extraTools);
@@ -101,6 +110,7 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
 	server.onclose = () => {
 		unsubscribeSettings?.();
 		unsubscribeCatalog?.();
+		if (ownsResultCache) resultCache.clear();
 	};
 
 	server.setRequestHandler(ListToolsRequestSchema, () => {
@@ -152,7 +162,13 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
 		}
 
 		try {
-			const result = await callTool({ name: request.params.name, arguments: input });
+			const result = await callTool({
+				name: request.params.name,
+				arguments: input,
+				signal: extra.signal,
+				resultClientId,
+				resultCache,
+			});
 			return {
 				content: [{ type: 'text' as const, text: result.text }],
 				isError: result.isError === true,
@@ -190,7 +206,7 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
 
 	server.setRequestHandler(ListResourcesRequestSchema, () => ({ resources: listResources(readMcpSettings()) }));
 	server.setRequestHandler(ReadResourceRequestSchema, async request => {
-		const content = await readResource(request.params.uri, readMcpSettings());
+		const content = await readResource(request.params.uri, readMcpSettings(), resultClientId, resultCache);
 		return { contents: [{ uri: content.uri, mimeType: content.mimeType, text: content.text }] };
 	});
 

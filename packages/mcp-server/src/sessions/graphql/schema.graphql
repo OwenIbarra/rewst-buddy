@@ -1359,7 +1359,7 @@ type ExportErrorObject {
   dependents: [ExportObjectIdentifier!]!
   errors: [String!]!
   id: ID!
-  paths: [[ExportObjectIdentifier!]!]!
+  paths: [[Unknown!]!]!
   type: String!
 }
 
@@ -1390,7 +1390,9 @@ interface ExportObjectsProgressMessage {
 union ExportObjectsStreamEvent = ExportObjectsStreamFailureResponse | ExportObjectsStreamMessage | ExportObjectsStreamSuccessResponse
 
 type ExportObjectsStreamFailureResponse implements BaseStreamEvent & BaseStreamResponse {
+  code: String
   didSucceed: Boolean!
+  error: String
   failures: [ExportErrorObject!]!
   isFinished: Boolean!
 }
@@ -5226,6 +5228,8 @@ input TriggerWhereInput {
   unpackedFromId: ID
   workflowId: ID
 }
+
+scalar Unknown
 
 input UnpackCrateInput {
   crateId: ID!

@@ -2,6 +2,7 @@ export * from './host';
 export * from './storage';
 export { startRuntime, stopRuntime } from './runtime';
 export { createMcpServer, type ExtraTool, type McpServerOptions } from './mcpServer';
+export { McpActions } from './mcp/McpActions';
 export { createEditorTool } from './editorOperations';
 export { registerHostCapabilities } from './capabilities/registry';
 export {

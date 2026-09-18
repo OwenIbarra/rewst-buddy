@@ -5,10 +5,11 @@ import { RuntimeWriteSettings } from './writeSettings';
 import { WorkingScopeManager } from './models/WorkingScopeManager';
 import { _resetApprovedMutationScopes } from './tools/graphqlTool';
 import { homedir, platform } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { discoverSharedServer, type SharedServerDescriptor } from './sharedDiscovery';
 import { startSharedHttpServer } from './sharedHttp';
+import { assertSecureRegionConfig, type RegionConfig } from './sessions/RegionConfig';
 import {
 	broadcastEditorEvent,
 	createSharedEditorServer,
@@ -57,7 +58,7 @@ Options:
   --approve-writes        Legacy compatibility flag; MCP clients handle approval
   --allow-graphql-mutations  Expose raw GraphQL mutation tools
   --state-dir PATH        Directory for session metadata and credentials
-  --config PATH           JSON file containing validated region settings
+  --config PATH           JSON file containing region and MCP path settings
   --discovery-dir PATH    Directory for the shared server descriptor
   --help                  Show this help
   --version               Show the package version
@@ -166,7 +167,57 @@ function readConfig(path: string | undefined): Record<string, unknown> {
 	const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
 	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Config must be a JSON object');
 	const record = parsed as Record<string, unknown>;
-	for (const key of Object.keys(record)) if (key !== 'regions') throw new Error(`Unsupported config key: ${key}`);
+	const supportedKeys = new Set([
+		'regions',
+		'mcp',
+		'exportRoots',
+		'exportDefaultDir',
+		'rewst-buddy.mcp.exportRoots',
+		'rewst-buddy.mcp.exportDefaultDir',
+	]);
+	for (const key of Object.keys(record))
+		if (!supportedKeys.has(key)) throw new Error(`Unsupported config key: ${key}`);
+	if (record.mcp !== undefined) {
+		if (!record.mcp || typeof record.mcp !== 'object' || Array.isArray(record.mcp)) {
+			throw new Error('Config mcp must be an object');
+		}
+		for (const key of Object.keys(record.mcp as Record<string, unknown>)) {
+			if (key !== 'exportRoots' && key !== 'exportDefaultDir')
+				throw new Error(`Unsupported config key: mcp.${key}`);
+		}
+	}
+	const configuredRootValues = [
+		record.exportRoots,
+		(record.mcp as Record<string, unknown> | undefined)?.exportRoots,
+		record['rewst-buddy.mcp.exportRoots'],
+	].filter(value => value !== undefined);
+	if (configuredRootValues.length > 1) {
+		throw new Error(
+			'Configure exportRoots in only one of exportRoots, mcp.exportRoots, or rewst-buddy.mcp.exportRoots',
+		);
+	}
+	if (configuredRootValues.length === 1) {
+		const roots = configuredRootValues[0];
+		if (!Array.isArray(roots) || roots.some(root => typeof root !== 'string' || !isAbsolute(root))) {
+			throw new Error('Config exportRoots must be an array of absolute directory paths');
+		}
+	}
+	const configuredDefaultDirValues = [
+		record.exportDefaultDir,
+		(record.mcp as Record<string, unknown> | undefined)?.exportDefaultDir,
+		record['rewst-buddy.mcp.exportDefaultDir'],
+	].filter(value => value !== undefined);
+	if (configuredDefaultDirValues.length > 1) {
+		throw new Error(
+			'Configure exportDefaultDir in only one of exportDefaultDir, mcp.exportDefaultDir, or rewst-buddy.mcp.exportDefaultDir',
+		);
+	}
+	if (configuredDefaultDirValues.length === 1) {
+		const dir = configuredDefaultDirValues[0];
+		if (typeof dir !== 'string' || (dir.trim() !== '' && !isAbsolute(dir))) {
+			throw new Error('Config exportDefaultDir must be an absolute directory path or an empty string');
+		}
+	}
 	if (record.regions !== undefined) {
 		if (!Array.isArray(record.regions) || record.regions.length === 0)
 			throw new Error('Config regions must be non-empty');
@@ -177,22 +228,28 @@ function readConfig(path: string | undefined): Record<string, unknown> {
 				if (typeof item[key] !== 'string' || item[key].trim() === '')
 					throw new Error(`Region ${key} is required`);
 			}
-			for (const key of ['graphqlUrl', 'loginUrl', 'subscriptionsUrl']) {
-				if (item[key] !== undefined) {
-					const url = new URL(item[key] as string);
-					if (
-						url.protocol !== 'https:' &&
-						url.protocol !== 'http:' &&
-						url.protocol !== 'wss:' &&
-						url.protocol !== 'ws:'
-					) {
-						throw new Error(`Region ${key} must use HTTP(S) or WS(S)`);
-					}
-				}
-			}
+			assertSecureRegionConfig(item as unknown as RegionConfig);
 		}
 	}
 	return record;
+}
+
+function configExportRoots(config: Record<string, unknown>): string[] {
+	return (
+		(config.exportRoots as string[] | undefined) ??
+		((config.mcp as Record<string, unknown> | undefined)?.exportRoots as string[] | undefined) ??
+		(config['rewst-buddy.mcp.exportRoots'] as string[] | undefined) ??
+		[]
+	);
+}
+
+function configExportDefaultDir(config: Record<string, unknown>): string {
+	return (
+		(config.exportDefaultDir as string | undefined) ??
+		((config.mcp as Record<string, unknown> | undefined)?.exportDefaultDir as string | undefined) ??
+		(config['rewst-buddy.mcp.exportDefaultDir'] as string | undefined) ??
+		''
+	);
 }
 
 function redact(value: unknown, secrets: string[]): unknown {
@@ -355,6 +412,8 @@ async function runLogin(options: ParsedCliOptions, io: CliIo): Promise<number> {
 		secrets,
 		getSetting<T>(key: string, fallback: T): T {
 			if (key === 'regions' && config.regions) return config.regions as T;
+			if (key === 'mcp.exportRoots') return configExportRoots(config) as T;
+			if (key === 'mcp.exportDefaultDir') return configExportDefaultDir(config) as T;
 			if (key === 'mcp.alwaysAllowedOrgs') return options.orgs as T;
 			if (key === 'mcp.enableWriteTools') return options.allowWrites as T;
 			if (key === 'mcp.enableDangerousGraphqlMutation') return options.allowGraphqlMutations as T;
@@ -546,6 +605,8 @@ export async function runCli(
 			secrets,
 			getSetting<T>(key: string, fallback: T): T {
 				if (key === 'regions' && config.regions) return config.regions as T;
+				if (key === 'mcp.exportRoots') return configExportRoots(config) as T;
+				if (key === 'mcp.exportDefaultDir') return configExportDefaultDir(config) as T;
 				if (key === 'mcp.alwaysAllowedOrgs') return writeSettings.get().orgs as T;
 				if (key === 'mcp.enableWriteTools') return writeSettings.get().allowWrites as T;
 				if (key === 'mcp.enableDangerousGraphqlMutation') return writeSettings.get().allowGraphqlMutations as T;

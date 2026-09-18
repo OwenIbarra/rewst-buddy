@@ -56,6 +56,7 @@ const mocks = vi.hoisted(() => {
 	};
 	let sharedConnection: unknown;
 	let connectGate: Promise<void> | undefined;
+	let workspaceFolders: { uri: { fsPath: string } }[] | undefined;
 	return {
 		refreshDefinition,
 		servers,
@@ -78,6 +79,12 @@ const mocks = vi.hoisted(() => {
 		},
 		set connectGate(value: Promise<void> | undefined) {
 			connectGate = value;
+		},
+		get workspaceFolders() {
+			return workspaceFolders;
+		},
+		set workspaceFolders(value: { uri: { fsPath: string } }[] | undefined) {
+			workspaceFolders = value;
 		},
 	};
 });
@@ -102,6 +109,9 @@ vi.mock('vscode', () => {
 	const value = {
 		EventEmitter,
 		workspace: {
+			get workspaceFolders() {
+				return mocks.workspaceFolders;
+			},
 			getConfiguration: (section = '') => ({
 				get: <T>(key: string, fallback: T): T => {
 					if (section === 'rewst-buddy.server' && key === 'enabled')
@@ -298,6 +308,7 @@ function resetMocks(): void {
 	mocks.activeProfiles.length = 0;
 	mocks.knownProfiles.length = 0;
 	mocks.connectGate = undefined;
+	mocks.workspaceFolders = undefined;
 }
 
 describe('embedded backend lifecycle', () => {
@@ -354,6 +365,56 @@ describe('embedded backend lifecycle', () => {
 		});
 		disposable.dispose();
 		await new Promise(resolve => setImmediate(resolve));
+	});
+});
+
+describe('workspaceRoots host binding', () => {
+	beforeEach(() => {
+		resetMocks();
+	});
+
+	it('maps workspace folder URIs to filesystem paths', async () => {
+		mocks.workspaceFolders = [{ uri: { fsPath: '/a' } }, { uri: { fsPath: '/b' } }];
+		const disposable = initializeBackend({ shared: false });
+		try {
+			await new Promise(resolve => setImmediate(resolve));
+			const host = (mocks.runtime.start.mock.calls as unknown[][]).at(-1)?.[0] as
+				| { workspaceRoots?: () => readonly string[] }
+				| undefined;
+			expect(host?.workspaceRoots?.()).toEqual(['/a', '/b']);
+		} finally {
+			disposable.dispose();
+			await new Promise(resolve => setImmediate(resolve));
+		}
+	});
+
+	it('returns an empty array when no workspace folders are available', async () => {
+		mocks.workspaceFolders = undefined;
+		const first = initializeBackend({ shared: false });
+		try {
+			await new Promise(resolve => setImmediate(resolve));
+			const host = (mocks.runtime.start.mock.calls as unknown[][]).at(-1)?.[0] as
+				| { workspaceRoots?: () => readonly string[] }
+				| undefined;
+			expect(host?.workspaceRoots?.()).toEqual([]);
+		} finally {
+			first.dispose();
+			await new Promise(resolve => setImmediate(resolve));
+		}
+
+		resetMocks();
+		mocks.workspaceFolders = [];
+		const second = initializeBackend({ shared: false });
+		try {
+			await new Promise(resolve => setImmediate(resolve));
+			const host = (mocks.runtime.start.mock.calls as unknown[][]).at(-1)?.[0] as
+				| { workspaceRoots?: () => readonly string[] }
+				| undefined;
+			expect(host?.workspaceRoots?.()).toEqual([]);
+		} finally {
+			second.dispose();
+			await new Promise(resolve => setImmediate(resolve));
+		}
 	});
 });
 

@@ -8,6 +8,7 @@ import {
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createMcpServer } from './mcpServer';
+import { MCP_RESULT_CACHE_TTL_MS, McpResultCache } from './capabilities/resultReadCapability';
 import {
 	defaultDiscoveryDir,
 	publishSharedServer,
@@ -171,6 +172,24 @@ export async function startSharedHttpServer(options: SharedHttpOptions): Promise
 		editorToken,
 	};
 	const pairs = new Map<string, Pair>();
+	// Stateful transports retain their server. Stateless transports do not, so
+	// keep results at the HTTP process boundary and partition them by the actual
+	// keep-alive connection that carried the request.
+	const httpResultCache = new McpResultCache();
+	const httpClientIds = new WeakMap<object, string>();
+	const resultClientIdFor = (req: IncomingMessage): string => {
+		let id = httpClientIds.get(req.socket);
+		if (!id) {
+			id = randomUUID();
+			httpClientIds.set(req.socket, id);
+		}
+		return id;
+	};
+	const resultCacheCleanup = setInterval(
+		() => httpResultCache.pruneExpired(),
+		Math.min(MCP_RESULT_CACHE_TTL_MS, 60_000),
+	);
+	resultCacheCleanup.unref();
 	const closingPairs = new WeakSet<object>();
 	const closePair = (pair: Pair): void => {
 		if (closingPairs.has(pair)) return;
@@ -242,7 +261,10 @@ export async function startSharedHttpServer(options: SharedHttpOptions): Promise
 					sessionIdGenerator: () => randomUUID(),
 					enableJsonResponse: true,
 				});
-				const server = createMcpServer();
+				const server = createMcpServer({
+					resultCache: httpResultCache,
+					resultClientId: resultClientIdFor(req),
+				});
 				pair = { server, transport, kind: 'mcp', sessionId: '' };
 				transport.onclose = () => {
 					closePair(pair as Pair);
@@ -423,6 +445,8 @@ export async function startSharedHttpServer(options: SharedHttpOptions): Promise
 		});
 		await publishSharedServer(descriptor, options.discoveryDir || defaultDiscoveryDir());
 	} catch (error) {
+		clearInterval(resultCacheCleanup);
+		httpResultCache.clear();
 		await new Promise<void>(resolve => nodeServer.close(() => resolve())).catch(() => undefined);
 		throw error;
 	}
@@ -440,6 +464,8 @@ export async function startSharedHttpServer(options: SharedHttpOptions): Promise
 		async close(): Promise<void> {
 			if (closed) return;
 			closed = true;
+			clearInterval(resultCacheCleanup);
+			httpResultCache.clear();
 			const active = [...pairs.values()];
 			pairs.clear();
 			await Promise.all(

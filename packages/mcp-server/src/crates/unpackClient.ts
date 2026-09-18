@@ -1,13 +1,14 @@
-import { getSubscriptionsUrl, type RegionConfig, type Session } from '../sessions/index';
+import { createAuthenticatedWebSocketTransport } from '../sessions/graphqlWsTransport';
+import type { Session } from '../sessions/index';
 import { log } from '../host';
 import { createClient } from 'graphql-ws';
-import WebSocket from 'ws';
 import {
 	collectUnpackOutcome,
 	UNPACK_CRATE_SUBSCRIPTION,
 	type UnpackCrateInput,
 	type UnpackSuccess,
 } from './crateUnpack';
+import { redactExportError } from '../export/exportObjects';
 
 /**
  * Transport wiring for the unpackCrate subscription. Unpacking a crate is a
@@ -17,21 +18,22 @@ import {
  * All decision logic lives in crateUnpack.ts; this file only moves bytes.
  */
 
-// Secrets hold whatever cookie string validated at session creation — either a
-// full "name=value" cookie or a bare token (same convention as ConversationClient).
-function toCookieHeader(stored: string, region: RegionConfig): string {
-	return stored.includes('=') ? stored : `${region.cookieName}=${stored}`;
-}
-
 interface SubscriptionResult {
 	data?: { unpackCrate?: unknown } | null;
 	errors?: readonly { message: string }[];
 }
 
-async function* payloadsOf(results: AsyncIterable<SubscriptionResult>): AsyncIterable<unknown> {
+async function* payloadsOf(
+	results: AsyncIterable<SubscriptionResult>,
+	secrets: readonly string[],
+	signal?: AbortSignal,
+): AsyncIterable<unknown> {
 	for await (const result of results) {
+		if (signal?.aborted) throw new Error('Crate unpack was cancelled.');
 		if (result.errors?.length) {
-			throw new Error(`GraphQL error: ${result.errors.map(e => e.message).join('; ')}`);
+			throw new Error(
+				`GraphQL error: ${result.errors.map(e => redactExportError(e.message, secrets)).join('; ')}`,
+			);
 		}
 		yield result.data?.unpackCrate;
 	}
@@ -56,24 +58,21 @@ export async function runUnpackCrate(options: UnpackTransportOptions): Promise<U
 	}
 
 	const { session } = options;
-	const cookie = toCookieHeader(await session.getCookies(), session.profile.region);
-	const url = getSubscriptionsUrl(session.profile.region);
-
-	class CookieWebSocket extends WebSocket {
-		constructor(address: string | URL, protocols?: string | string[]) {
-			super(address, protocols, { headers: { cookie } });
-		}
-	}
+	const { url, webSocketImpl, redactionSecrets } = await createAuthenticatedWebSocketTransport(
+		session,
+		options.signal,
+	);
+	if (options.signal?.aborted) throw new Error('Crate unpack was cancelled before it started.');
 
 	const client = createClient({
 		url,
-		webSocketImpl: CookieWebSocket,
+		webSocketImpl,
 		retryAttempts: 0,
 		lazy: true,
 		on: {
 			connected: () => log.debug('unpackCrate: ws connected', { url }),
 			closed: () => log.debug('unpackCrate: ws closed'),
-			error: err => log.debug('unpackCrate: ws error', err),
+			error: err => log.debug('unpackCrate: ws error', redactExportError(err, redactionSecrets)),
 		},
 	});
 
@@ -94,15 +93,23 @@ export async function runUnpackCrate(options: UnpackTransportOptions): Promise<U
 	});
 
 	try {
+		if (options.signal?.aborted) throw new Error('Crate unpack was cancelled before it started.');
 		const results = client.iterate<SubscriptionResult['data']>({
 			query: UNPACK_CRATE_SUBSCRIPTION,
 			variables: { unpackingArguments: options.input },
 		});
-		return await collectUnpackOutcome(payloadsOf(results), {
+		return await collectUnpackOutcome(payloadsOf(results, redactionSecrets, options.signal), {
 			inactivityTimeoutMs: options.inactivityTimeoutMs,
 			abort: dispose,
+			signal: options.signal,
+			redactionSecrets,
 			onProgress: options.onProgress,
 		});
+	} catch (error) {
+		if (options.signal?.aborted) throw new Error('Crate unpack was cancelled.');
+		const message = redactExportError(error, redactionSecrets);
+		if (message.startsWith('Crate unpack') || message.startsWith('GraphQL error:')) throw new Error(message);
+		throw new Error(`Crate unpack subscription failed: ${message}`);
 	} finally {
 		options.signal?.removeEventListener('abort', dispose);
 		dispose();

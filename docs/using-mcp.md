@@ -53,6 +53,7 @@ Working scope persists and is shared between clients. Inspect it when switching 
 | Understand an action      | “Find the action used by this task and explain its required inputs.”                               |
 | Explore GraphQL           | “Inspect the schema, then run a read-only query for the requested fields in Acme.”                 |
 | Understand a Jinja filter | “Look up the Rewst documentation for this filter and explain how to use it here.”                  |
+| Export a workflow         | “Export Employee Onboarding in Acme and return the signed bundle.”                                 |
 
 Dedicated tools are usually the easiest starting point. `buddy_graphql_query` accepts read-only query operations; it rejects mutations and subscriptions. Public MCP tools cannot submit or retrieve login cookies.
 

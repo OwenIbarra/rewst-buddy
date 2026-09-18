@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
-import { test } from 'node:test';
+import { before, test } from 'node:test';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +28,15 @@ function runBuild() {
 	const result = runNode(['scripts/build.mjs']);
 	assert.equal(result.status, 0, `package build failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
 }
+
+// dist/ is shared mutable state: every test below packs or reads it, so it is
+// built exactly once here. Per-test rebuilds used to rewrite dist/ while
+// another test packed it (notably the offline help/version test), which
+// flaked. These top-level tests run serially (node:test default — do not opt
+// into concurrent subtests) and must not rebuild dist/ themselves.
+before(() => {
+	runBuild();
+});
 
 function runNpm(args, options) {
 	const npmExecPath = process.env.npm_execpath;
@@ -112,7 +121,6 @@ test('the two package entrypoints are present and buildable', () => {
 		readFileSync(join(packageRoot, 'src/index.ts'), 'utf8'),
 		'src/index.ts must be supplied by the MCP split',
 	);
-	runBuild();
 
 	const cli = join(packageRoot, 'dist/cli.cjs');
 	const index = join(packageRoot, 'dist/index.cjs');
@@ -137,7 +145,6 @@ test('production metafile has no VS Code import and optional ws addons stay exte
 });
 
 test('bundled CLI supports offline help and version', () => {
-	runBuild();
 	const cli = packAndExtract();
 	for (const flag of ['--help', '--version']) {
 		const result = runNode([cli, flag], {
@@ -222,7 +229,6 @@ test('CLI starts under its npm executable name', () => {
 });
 
 test('npm pack dry run contains only package metadata, README, license, and dist', () => {
-	runBuild();
 	const output = runNpm(['pack', '--dry-run', '--json', '--ignore-scripts'], {
 		cwd: packageRoot,
 		encoding: 'utf8',
