@@ -227,9 +227,13 @@ clearly when no editor is attached.
 ### Requirement: Read-only workflow export with optional local save
 
 The server SHALL expose `buddy_export_workflows` as a read capability that
-returns Rewst's signed export bundle unchanged, with signing intact. It SHALL
+preserves Rewst's signed export bundle unchanged, with signing intact, whether
+saved to `outputPath` or returned inline. It SHALL
 verify every requested workflow id belongs to the requested organization before
-exporting and fail closed otherwise. When `outputPath` names an existing
+exporting and fail closed otherwise. Inline results SHALL include the bundle
+only when `outputPath` is absent or `includeBundle` is true; saved-output
+results MAY return metadata without the bundle when `includeBundle` is false.
+When `outputPath` names an existing
 directory the server SHALL save under the server-recommended filename; pointing
 `outputPath` at the Downloads folder itself SHALL save inside a `Rewst Exports`
 subfolder, created when missing; when `outputPath` is omitted the server SHALL
