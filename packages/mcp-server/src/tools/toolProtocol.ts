@@ -130,7 +130,7 @@ function renderManifest(
 	const catalogSection = abbreviated
 		? [
 				'',
-				`The tools below are listed without their args schema. Before calling one, request \`${TOOL_DETAILS_TOOL_NAME}\` with its name to get its full description and exact args, then call it in a following reply. Never guess these tools' args.`,
+				`The tools below are listed without their args schema. Before calling one, request \`${TOOL_DETAILS_TOOL_NAME}\` with its name to get its full description and exact args, then call it in a following reply. When several summarized tools need expansion, request them together in one reply (one block per tool) rather than one per reply. Never guess these tools' args.`,
 				...(catalogLines.length > 0 ? ['', 'Tool catalog (summary only):', ...catalogLines] : []),
 				...(nameLines.length > 0 ? ['', 'Also available (name only):', ...nameLines] : []),
 			]
@@ -150,7 +150,7 @@ function renderManifest(
 		...detailLines,
 		...catalogSection,
 		'',
-		`Rules: when you need tool information, reply with ONLY vscode-tool blocks (up to ${MAX_REQUESTS_PER_TURN} per reply) and no other prose; the editor runs them and sends the results back to you. After receiving results you may request more tools or give your final answer. Tackle multi-step work one step per reply: for a multi-step request, give the plan first (a tool-free reply, or a todo-list tool call if one is available), then take one step (one short lead-in sentence plus its block) per following reply; a single lookup is one step, so answer it tool-first. Never guess at file contents or workspace structure when a tool can check it.`,
+		`Rules: when you need tool information, reply with ONLY vscode-tool blocks (up to ${MAX_REQUESTS_PER_TURN} per reply) and no other prose — except that a first-step details request may carry the one short plan sentence before its block, like any other first step; the editor runs them and sends the results back to you. After receiving results you may request more tools or give your final answer. Tackle multi-step work one step per reply: state the plan in at most one short sentence and take the first step in the SAME reply — that sentence doubles as the first step's lead-in, followed immediately by its vscode-tool block (or a todo-list tool call if one is available), never a reply that only narrates intent without its tool block; do not write a second lead-in for the first step. if the history already states the plan, do not restate it — emit the next tool block or the final answer. Then take one step (one short lead-in sentence plus its block) per following reply — except a follow-up details request, which stays block-only; a single lookup is one step, so answer it tool-first. Never guess at file contents or workspace structure when a tool can check it.`,
 	].join('\n');
 }
 

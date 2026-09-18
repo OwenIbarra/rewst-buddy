@@ -33,9 +33,11 @@ active organization's session.
 The system SHALL create a disposable backend conversation for every provider
 turn. It SHALL seed that conversation with the visible VS Code history as
 explicit USER and ASSISTANT messages, then delete the conversation after the
-stream, redirect, or local-tool round finishes. Follow-ups SHALL replay the
-visible history rather than relying on a hidden backend id or assistant
-breadcrumb, so edited and restored history cannot reattach rolled-back turns.
+provider response completes, including terminal handling (final answer, cap or
+stop notes, approval pauses, cancellations, and errors). Follow-ups SHALL
+replay the visible history rather than relying on a hidden backend id or
+assistant breadcrumb, so edited and restored history cannot reattach
+rolled-back turns.
 
 #### Scenario: Follow-up turn gets a fresh seed
 
@@ -61,6 +63,42 @@ breadcrumb, so edited and restored history cannot reattach rolled-back turns.
 - **THEN** the ask receives the id returned by the seed operation
 - **AND** the provider deletes that same id before retrying
 - **AND** the retry uses a distinct newly seeded conversation id
+
+### Requirement: Share one backend conversation across a response's tool rounds
+
+Within a single chat response, the system SHALL keep one backend conversation
+across in-response rounds (in-process Buddy rounds and native-tool redirect
+corrections): continuation asks SHALL reuse the same conversation id and carry
+only the new tool results or correction tail, without re-seeding the transcript
+or re-sending the directive and tool manifest. A new user turn (including a VS
+Code tool-result replay) SHALL still seed a fresh disposable conversation from
+the visible history, every terminal path SHALL still delete its conversation,
+and an error retry SHALL still delete and reseed fresh.
+
+Source: `src/ui/chat/model/RoboRewstyChatModelProvider.ts`.
+
+#### Scenario: Buddy rounds share one conversation
+
+- **GIVEN** a response that needs two Buddy tool rounds before answering
+- **WHEN** the response runs
+- **THEN** the extension seeds exactly one conversation
+- **AND** every ask in the response reuses that conversation id
+- **AND** each continuation ask carries only its round's results tail
+- **AND** the conversation is deleted once when the response ends
+
+#### Scenario: Redirect correction reuses the conversation
+
+- **GIVEN** a native Rewst tool attempt mid-response
+- **WHEN** the extension corrects it to the local tool protocol
+- **THEN** the correction ask reuses the response's conversation id
+- **AND** it carries the bare correction tail (still naming the protocol and
+  the available tools), not a re-sent directive and manifest
+
+#### Scenario: Error retry still reseeds fresh
+
+- **GIVEN** an ask that errors before producing output with no tool run
+- **WHEN** the provider retries
+- **THEN** it deletes the failed conversation and seeds a distinct new one
 
 ### Requirement: Cap and frame high-noise tool output in the stateless transcript
 
@@ -285,6 +323,19 @@ built-in chat path.
 - **THEN** the extension parses it, runs the named Buddy tool in-process, and
   feeds the result back as the next turn
 
+#### Scenario: Multi-step plans ship with the first tool call
+
+- **GIVEN** a multi-step request
+- **WHEN** the assistant starts work
+- **THEN** it states the plan in at most one short sentence in the same reply as
+  the first step's `vscode-tool` block (or the todo-tool call recording the
+  plan), never as a reply that only narrates intent — such a reply ends the
+  turn with nothing executed, so the next turn re-plans instead of continuing
+- **AND** that plan sentence doubles as the first step's lead-in, with no second
+  lead-in for the first step
+- **AND** when the visible history already states the plan, it emits the next
+  tool block or the final answer rather than restating the plan
+
 #### Scenario: External MCP disabled
 
 - **GIVEN** `rewst-buddy.mcp.enable` is false
@@ -359,8 +410,8 @@ expected outcome.
 
 - **GIVEN** Buddy tools are advertised locally
 - **WHEN** the backend emits activity for a native Rewst tool
-- **THEN** the extension sends a correction turn in a new disposable backend
-  conversation explaining the local fenced protocol
+- **THEN** the extension sends a correction turn in the existing disposable
+  backend conversation explaining the local fenced protocol
 - **AND** the abandoned native tool card and output are not shown to the user
 
 #### Scenario: External MCP disabled but Buddy tools available
