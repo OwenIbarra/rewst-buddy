@@ -310,7 +310,7 @@ suite('Unit: workflow export engine', () => {
 		assert.ok(Buffer.byteLength(basename(suffixedBoundaryPath), 'utf8') <= MAX_WORKFLOW_EXPORT_FILENAME_BYTES);
 	});
 
-	test('serializes concurrent directory exports through unused-name selection and publication', async () => {
+	test('keeps overlapping command and sidebar directory exports distinct', async () => {
 		const existing = new Set<string>();
 		const paths: string[] = [];
 		let releaseFirst!: () => void;
@@ -327,7 +327,7 @@ suite('Unit: workflow export engine', () => {
 		};
 		const exists = async (path: string): Promise<boolean> => existing.has(path);
 
-		const first = exportWorkflowBatchToAvailablePath(
+		const commandExport = exportWorkflowBatchToAvailablePath(
 			request,
 			async outputPath => {
 				assert.ok(outputPath);
@@ -340,7 +340,7 @@ suite('Unit: workflow export engine', () => {
 			exists,
 		);
 		await firstStarted;
-		const second = exportWorkflowBatchToAvailablePath(
+		const sidebarExport = exportWorkflowBatchToAvailablePath(
 			request,
 			async outputPath => {
 				assert.ok(outputPath);
@@ -352,7 +352,7 @@ suite('Unit: workflow export engine', () => {
 		);
 		releaseFirst();
 
-		assert.deepStrictEqual(await Promise.all([first, second]), [
+		assert.deepStrictEqual(await Promise.all([commandExport, sidebarExport]), [
 			join('/exports', 'rewst-workflows-batch-001-of-001.json'),
 			join('/exports', 'rewst-workflows-batch-001-of-001-2.json'),
 		]);

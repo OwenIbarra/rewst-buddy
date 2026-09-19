@@ -242,12 +242,10 @@ save under `rewst-buddy.mcp.exportDefaultDir`, falling back to
 missing; local
 writes SHALL be atomic and never replace an existing file. Large bundles SHALL
 remain pageable through `buddy_result_read`.
-The editor command and sidebar SHALL follow the same no-overwrite rule. For a
-directory destination they SHALL choose an unused generated filename, adding a
-deterministic numeric suffix when needed, and SHALL serialize filename
-allocation through publication per directory so overlapping editor callers do
-not select the same path. An explicit file destination SHALL remain unchanged
-and rely on the server's atomic no-overwrite publication as the final safeguard.
+The editor command and sidebar SHALL follow the same no-overwrite rule. Concurrent
+directory exports SHALL receive distinct deterministic filenames, adding a
+numeric suffix when needed. Explicit file destinations SHALL never replace an
+existing file.
 
 #### Scenario: Export then save a workflow bundle
 
@@ -260,8 +258,8 @@ and rely on the server's atomic no-overwrite publication as the final safeguard.
 
 - **GIVEN** the command and sidebar would generate the same output filename in one directory
 - **WHEN** their exports overlap
-- **THEN** filename allocation and publication are serialized for that directory
-- **AND** the later export uses the first available numeric suffix without replacing either output
+- **THEN** both outputs are preserved under distinct deterministic filenames
+- **AND** the later export uses the first available numeric suffix
 
 ### Requirement: Authenticated subscription transport boundaries
 
