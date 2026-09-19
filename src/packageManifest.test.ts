@@ -33,6 +33,7 @@ interface PackageManifest {
 		menus?: {
 			commandPalette?: { command: string; when?: string }[];
 		};
+		views?: Record<string, { type?: string; id: string; name: string; icon?: string }[]>;
 	};
 }
 
@@ -101,6 +102,27 @@ suite('Unit: package manifest', () => {
 		const ids = manifest.contributes.commands.map(entry => entry.command);
 		assert.ok(ids.includes('rewst-buddy.prefix.ResumeRewstAiConversation'));
 		assert.ok(ids.includes('rewst-buddy.prefix.ApplyRewstAiEdit'));
+	});
+
+	test('workflow export commands are contributed to the palette for active sessions', () => {
+		const ids = manifest.contributes.commands.map(entry => entry.command);
+		assert.ok(ids.includes('rewst-buddy.prefix.ExportWorkflows'));
+		assert.ok(ids.includes('rewst-buddy.prefix.OpenWorkflowExporter'));
+		const paletteEntries = manifest.contributes.menus?.commandPalette ?? [];
+		for (const command of ['rewst-buddy.prefix.ExportWorkflows', 'rewst-buddy.prefix.OpenWorkflowExporter']) {
+			assert.strictEqual(
+				paletteEntries.find(entry => entry.command === command)?.when,
+				'rewst-buddy.anyActiveSessions',
+			);
+		}
+	});
+
+	test('workflow exporter is contributed as a persistent Rewst Buddy sidebar webview', () => {
+		const sidebarViews = manifest.contributes.views?.['rewst-buddy-sidebar'] ?? [];
+		assert.deepStrictEqual(
+			sidebarViews.find(view => view.id === 'rewst-buddy.workflowExporter'),
+			{ type: 'webview', id: 'rewst-buddy.workflowExporter', name: 'Workflow Exporter', icon: '' },
+		);
 	});
 
 	test('Ask Rewst AI is bound to ctrl+alt+r / cmd+alt+r', () => {
