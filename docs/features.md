@@ -120,7 +120,7 @@ Templates that reference other templates via `{{ template('UUID') }}` are automa
 
 ## Workflow Exporter
 
-The **Workflow Exporter** is a persistent webview in the Rewst Buddy sidebar for selecting and exporting workflows without leaving VS Code.
+The **Workflow Exporter** is in the Rewst Buddy sidebar, where you can select and export workflows without leaving VS Code.
 
 To open it, click the Rewst Buddy icon in the activity bar and select **Workflow Exporter**, or run `Rewst Buddy: Open Workflow Exporter` from the Command Palette.
 
@@ -132,9 +132,9 @@ To open it, click the Rewst Buddy icon in the activity bar and select **Workflow
 4. Choose **Separate files** or **Signed bundle**. Separate files can optionally use workflow names in their filenames.
 5. Choose a destination folder or bundle file, then start the export. Progress, cancellation, failures, and generated files appear in the exporter.
 
-The exporter remembers its selections and filters across view reloads. It never overwrites an existing export file; choose a new filename when the selected destination already exists. Export batch size is limited by the extension's backend capability, and the UI reports the authoritative limit.
+The exporter remembers its selections and filters across view reloads. A signed bundle file can contain at most **25 workflows**; larger selections are split into bundle files of up to 25 workflows each. Existing export files are never overwritten, so the exporter chooses another filename for folder destinations and asks you to choose a new name for an explicit file destination.
 
-The **Export Workflows** command opens the catalog picker for a quick export without using the sidebar webview. Both paths use the same validation and backend export flow.
+The **Export Workflows** command opens the catalog picker for a quick export without opening the sidebar. The sidebar and command follow the same export rules, including the 25-workflow bundle-file limit, automatic batching, and no-overwrite behavior.
 
 ## Crate Installer
 

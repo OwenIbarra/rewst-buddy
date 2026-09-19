@@ -94,4 +94,4 @@ The workflow exporter lets you browse an organization's workflow catalog and sav
 3. Search or filter the catalog by name, id, tags, or creation/update dates, then select the workflows to export.
 4. Choose **Separate files** or **Signed bundle**, select the destination, and click **Start export**.
 
-The exporter shows progress and reports any failed exports or generated output files. It keeps its catalog and UI state across view reloads. For the command-palette picker, run `Rewst Buddy: Export Workflows`.
+The exporter shows progress and reports any failed exports or generated output files. It keeps its catalog and selections across view reloads. Each signed bundle file can contain up to **25 workflows**; larger selections are split into multiple bundle files, and existing files are never overwritten. For the command-palette picker, run `Rewst Buddy: Export Workflows`; it follows the same batching, destination, and no-overwrite rules as the sidebar.

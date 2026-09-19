@@ -11,8 +11,8 @@ import type { WorkflowExportResult } from '../../../packages/mcp-server/src/capa
 import GenericCommand from '../GenericCommand';
 import {
 	MAX_WORKFLOW_EXPORT_BATCH_SIZE,
+	exportWorkflowBatchToAvailablePath,
 	runWorkflowExports,
-	workflowExportOutputPath,
 	type ExportWorkflowChoice,
 	type WorkflowExportDestination,
 	type WorkflowExportFlowResult,
@@ -21,7 +21,10 @@ import {
 
 export {
 	MAX_WORKFLOW_EXPORT_BATCH_SIZE,
+	MAX_WORKFLOW_EXPORT_FILENAME_BYTES,
+	exportWorkflowBatchToAvailablePath,
 	runWorkflowExports,
+	resolveWorkflowExportOutputPath,
 	sanitizeWorkflowFilenamePart,
 	separateWorkflowExportFilename,
 	workflowExportOutputPath,
@@ -465,21 +468,25 @@ export class ExportWorkflows extends GenericCommand {
 						mode,
 						(workflowIds, batchIndex, batchCount) => {
 							const batchIds = new Set(workflowIds);
-							return editorDataClient.exportWorkflows(
+							return exportWorkflowBatchToAvailablePath(
 								{
-									sessionId,
-									orgId: pickedOrg.org.id,
-									workflowIds,
-									outputPath: workflowExportOutputPath(
-										destination,
-										defaultDirectory,
-										mode,
-										workflows.filter(workflow => batchIds.has(workflow.id)),
-										batchIndex,
-										batchCount,
-									),
+									destination,
+									defaultDirectory,
+									mode,
+									workflows: workflows.filter(workflow => batchIds.has(workflow.id)),
+									batchIndex,
+									batchCount,
 								},
-								{ signal: controller.signal },
+								outputPath =>
+									editorDataClient.exportWorkflows(
+										{
+											sessionId,
+											orgId: pickedOrg.org.id,
+											workflowIds,
+											outputPath,
+										},
+										{ signal: controller.signal },
+									),
 							);
 						},
 						controller.signal,

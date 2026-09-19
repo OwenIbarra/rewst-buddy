@@ -1,9 +1,12 @@
 import { stat } from 'node:fs/promises';
-import { extname, join } from 'node:path';
+import { basename, dirname, extname, join, resolve as resolvePath } from 'node:path';
 import type { WorkflowExportResult } from '../../../packages/mcp-server/src/capabilities/workflowExportCapability';
 
 /** Rewst's export operation accepts at most this many workflow ids per call. */
 export const MAX_WORKFLOW_EXPORT_BATCH_SIZE = 25;
+
+/** Maximum UTF-8 bytes for a portable filesystem path segment. */
+export const MAX_WORKFLOW_EXPORT_FILENAME_BYTES = 255;
 
 export interface ExportWorkflowChoice {
 	id: string;
@@ -107,6 +110,26 @@ export async function runWorkflowExports(
 
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 
+function truncateByUtf8Bytes(value: string, maxBytes: number): string {
+	if (maxBytes <= 0) return '';
+	if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+	let result = '';
+	let usedBytes = 0;
+	for (const character of value) {
+		const characterBytes = Buffer.byteLength(character, 'utf8');
+		if (usedBytes + characterBytes > maxBytes) break;
+		result += character;
+		usedBytes += characterBytes;
+	}
+	return result;
+}
+
+function fitFilenamePart(value: string, maxBytes: number, fallback = 'workflow'): string {
+	const fitted = truncateByUtf8Bytes(value, maxBytes).replace(/[. ]+$/g, '');
+	if (fitted) return fitted;
+	return truncateByUtf8Bytes(fallback, maxBytes).replace(/[. ]+$/g, '') || 'w';
+}
+
 /** Produces one portable path segment while retaining readable workflow names. */
 export function sanitizeWorkflowFilenamePart(value: string, maxLength = 150): string {
 	let safe = [...value.normalize('NFKC')]
@@ -122,7 +145,12 @@ export function sanitizeWorkflowFilenamePart(value: string, maxLength = 150): st
 		.replace(/^[. ]+|[. ]+$/g, '');
 	if (!safe || safe === '.' || safe === '..') safe = 'workflow';
 	if (WINDOWS_RESERVED_NAME.test(safe)) safe = `_${safe}`;
-	return safe.slice(0, maxLength).replace(/[. ]+$/g, '') || 'workflow';
+	return (
+		[...safe]
+			.slice(0, maxLength)
+			.join('')
+			.replace(/[. ]+$/g, '') || 'workflow'
+	);
 }
 
 /** Names separate exports by id or, when opted in, by readable name plus a collision-safe workflow id. */
@@ -130,9 +158,29 @@ export function separateWorkflowExportFilename(
 	workflow: Pick<ExportWorkflowChoice, 'id' | 'name'>,
 	useWorkflowNames: boolean,
 ): string {
-	const id = sanitizeWorkflowFilenamePart(workflow.id, 80);
-	if (!useWorkflowNames) return `rewst-workflow-${id}.json`;
-	return `${sanitizeWorkflowFilenamePart(workflow.name)}--${id}.json`;
+	const extension = '.json';
+	const sanitizedId = sanitizeWorkflowFilenamePart(workflow.id, 80);
+	if (!useWorkflowNames) {
+		const prefix = 'rewst-workflow-';
+		const id = fitFilenamePart(
+			sanitizedId,
+			MAX_WORKFLOW_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${prefix}${extension}`, 'utf8'),
+		);
+		return `${prefix}${id}${extension}`;
+	}
+
+	const separator = '--';
+	const fallbackName = 'workflow';
+	const id = fitFilenamePart(
+		sanitizedId,
+		MAX_WORKFLOW_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${fallbackName}${separator}${extension}`, 'utf8'),
+	);
+	const name = fitFilenamePart(
+		sanitizeWorkflowFilenamePart(workflow.name),
+		MAX_WORKFLOW_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${separator}${id}${extension}`, 'utf8'),
+		fallbackName,
+	);
+	return `${name}${separator}${id}${extension}`;
 }
 
 export function workflowExportOutputPath(
@@ -194,10 +242,73 @@ export async function resolveWorkflowExportOutputPath(
 	);
 	if (!outputPath || destination.kind === 'file' || !(await exists(outputPath))) return outputPath;
 
+	const directory = dirname(outputPath);
 	const extension = extname(outputPath);
-	const stem = outputPath.slice(0, -extension.length);
+	const filename = basename(outputPath);
+	const stem = filename.slice(0, filename.length - extension.length);
 	for (let suffix = 2; ; suffix++) {
-		const candidate = `${stem}-${suffix}${extension}`;
+		const suffixText = `-${suffix}`;
+		const fittedStem = fitFilenamePart(
+			stem,
+			MAX_WORKFLOW_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${suffixText}${extension}`, 'utf8'),
+		);
+		const candidate = join(directory, `${fittedStem}${suffixText}${extension}`);
 		if (!(await exists(candidate))) return candidate;
 	}
+}
+
+export interface WorkflowExportPathRequest {
+	destination: WorkflowExportDestination;
+	defaultDirectory: string;
+	mode: WorkflowExportMode;
+	workflows: readonly Pick<ExportWorkflowChoice, 'id' | 'name'>[];
+	batchIndex: number;
+	batchCount: number;
+	useWorkflowNames?: boolean;
+}
+
+const directoryExportQueues = new Map<string, Promise<void>>();
+
+function serializeDirectoryExport<T>(directory: string, operation: () => Promise<T>): Promise<T> {
+	const key = resolvePath(directory);
+	const previous = directoryExportQueues.get(key) ?? Promise.resolve();
+	const result = previous.then(operation, operation);
+	const settled = result.then(
+		() => undefined,
+		() => undefined,
+	);
+	directoryExportQueues.set(key, settled);
+	void settled.then(() => {
+		if (directoryExportQueues.get(key) === settled) directoryExportQueues.delete(key);
+	});
+	return result;
+}
+
+/**
+ * Resolves and publishes a directory export as one serialized operation so
+ * command and sidebar callers cannot select the same available filename.
+ * Explicit file destinations remain verbatim and rely on backend no-overwrite
+ * publication for their final atomic safeguard.
+ */
+export async function exportWorkflowBatchToAvailablePath<T>(
+	request: WorkflowExportPathRequest,
+	exporter: (outputPath: string | undefined) => Promise<T>,
+	exists: PathExists = pathExists,
+): Promise<T> {
+	const run = async (): Promise<T> => {
+		const outputPath = await resolveWorkflowExportOutputPath(
+			request.destination,
+			request.defaultDirectory,
+			request.mode,
+			request.workflows,
+			request.batchIndex,
+			request.batchCount,
+			request.useWorkflowNames,
+			exists,
+		);
+		return exporter(outputPath);
+	};
+
+	if (request.destination.kind === 'file') return run();
+	return serializeDirectoryExport(request.destination.outputPath ?? request.defaultDirectory, run);
 }

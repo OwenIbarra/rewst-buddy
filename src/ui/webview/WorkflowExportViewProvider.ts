@@ -6,7 +6,7 @@ import vscode from 'vscode';
 import { editorDataClient } from '../../backend/editorDataClient';
 import {
 	MAX_WORKFLOW_EXPORT_BATCH_SIZE,
-	resolveWorkflowExportOutputPath,
+	exportWorkflowBatchToAvailablePath,
 	runWorkflowExports,
 	type ExportWorkflowChoice,
 	type WorkflowExportDestination,
@@ -23,7 +23,6 @@ import {
 export interface WorkflowExportOrganization {
 	id: string;
 	name: string;
-	sessionId: string;
 }
 
 function sessionIdFor(session: Session): string | undefined {
@@ -33,14 +32,20 @@ function sessionIdFor(session: Session): string | undefined {
 export function workflowExportOrganizations(sessions: readonly Session[]): WorkflowExportOrganization[] {
 	const result = new Map<string, WorkflowExportOrganization>();
 	for (const session of sessions) {
-		const sessionId = sessionIdFor(session);
-		if (!sessionId) continue;
+		if (!sessionIdFor(session)) continue;
 		for (const org of [session.profile.org, ...(session.profile.allManagedOrgs ?? [])]) {
 			if (!org?.id || result.has(org.id)) continue;
-			result.set(org.id, { id: org.id, name: org.name || org.id, sessionId });
+			result.set(org.id, { id: org.id, name: org.name || org.id });
 		}
 	}
 	return [...result.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function resolveWorkflowExportSessionId(orgId: string): Promise<string> {
+	const session = await SessionManager.getSessionForOrg(orgId);
+	const sessionId = sessionIdFor(session);
+	if (!sessionId) throw new Error(`No usable session is available for organization "${orgId}".`);
+	return sessionId;
 }
 
 function errorMessage(error: unknown): string {
@@ -120,6 +125,7 @@ export class WorkflowExportViewProvider implements vscode.WebviewViewProvider, v
 				...WORKFLOW_EXPORT_BOOTSTRAP_PAYLOAD,
 				organizations: this.organizations(),
 				defaultDirectory: this.defaultDirectory,
+				catalogOrgId: this.catalogOrgId ?? null,
 			});
 		} catch (error) {
 			await this.post({
@@ -139,15 +145,17 @@ export class WorkflowExportViewProvider implements vscode.WebviewViewProvider, v
 		const controller = new AbortController();
 		this.catalogController = controller;
 		this.catalog = [];
-		this.catalogOrgId = org.id;
+		this.catalogOrgId = undefined;
 		await this.post({ type: 'catalogLoading', orgId: org.id });
 		try {
+			const sessionId = await resolveWorkflowExportSessionId(org.id);
 			const rows = await editorDataClient.listExportWorkflows(
-				{ sessionId: org.sessionId, orgId: org.id },
+				{ sessionId, orgId: org.id },
 				{ signal: controller.signal },
 			);
 			if (controller.signal.aborted || this.catalogController !== controller) return;
 			this.catalog = normalizeWorkflowCatalog(rows, org);
+			this.catalogOrgId = org.id;
 			await this.post({
 				type: 'catalogLoaded',
 				orgId: org.id,
@@ -266,24 +274,28 @@ export class WorkflowExportViewProvider implements vscode.WebviewViewProvider, v
 				workflows,
 				mode,
 				async (workflowIds, batchIndex, batchCount) => {
+					const sessionId = await resolveWorkflowExportSessionId(org.id);
 					const workflowIdSet = new Set(workflowIds);
-					const outputPath = await resolveWorkflowExportOutputPath(
-						destination,
-						this.defaultDirectory!,
-						mode,
-						workflows.filter(workflow => workflowIdSet.has(workflow.id)),
-						batchIndex,
-						batchCount,
-						mode === 'separate' && message.useWorkflowNames === true,
-					);
-					return editorDataClient.exportWorkflows(
+					return exportWorkflowBatchToAvailablePath(
 						{
-							sessionId: org.sessionId,
-							orgId: org.id,
-							workflowIds,
-							outputPath,
+							destination,
+							defaultDirectory: this.defaultDirectory!,
+							mode,
+							workflows: workflows.filter(workflow => workflowIdSet.has(workflow.id)),
+							batchIndex,
+							batchCount,
+							useWorkflowNames: mode === 'separate' && message.useWorkflowNames === true,
 						},
-						{ signal: controller.signal },
+						outputPath =>
+							editorDataClient.exportWorkflows(
+								{
+									sessionId,
+									orgId: org.id,
+									workflowIds,
+									outputPath,
+								},
+								{ signal: controller.signal },
+							),
 					);
 				},
 				controller.signal,

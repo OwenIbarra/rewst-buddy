@@ -145,6 +145,38 @@ describe('editor data operations', () => {
 		);
 	});
 
+	it('continues workflow pagination after a full page containing a null row', async () => {
+		const firstPage = Array.from({ length: 500 }, (_, index) =>
+			index === 250
+				? null
+				: {
+						id: `wf-${index}`,
+						name: `Workflow ${index}`,
+						orgId: 'org-1',
+					},
+		);
+		const rawGraphql = vi.fn(async (_query: string, variables?: Record<string, unknown>) => ({
+			data: {
+				workflows:
+					variables?.offset === 0
+						? firstPage
+						: variables?.offset === 500
+							? [{ id: 'wf-second-page', name: 'Second Page', orgId: 'org-1' }]
+							: [],
+			},
+		}));
+		installSession(rawGraphql);
+
+		const rows = await editorDataOperations['workflows.export.catalog'](
+			{ sessionId: 'user-1', orgId: 'org-1' },
+			{ signal: new AbortController().signal, emit: async () => {} },
+		);
+
+		expect(rows).toHaveLength(500);
+		expect(rows).toContainEqual({ id: 'wf-second-page', name: 'Second Page', orgId: 'org-1' });
+		expect(rawGraphql.mock.calls.map(call => call[1]?.offset)).toEqual([0, 500]);
+	});
+
 	it('supplies the default destination and does not allow inline bundle output', async () => {
 		const rawGraphql = vi.fn(async (query: string, variables?: Record<string, unknown>) =>
 			query.includes('RewstBuddyWorkflowOwner')

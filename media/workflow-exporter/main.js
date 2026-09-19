@@ -6,6 +6,7 @@
 		organizationSearch: '',
 		organizationPickerOpen: false,
 		selectedOrgId: '',
+		catalogOrgId: '',
 		workflows: [],
 		visibleIds: [],
 		selectedIds: [],
@@ -49,10 +50,14 @@
 	}
 	function dateValue(value) {
 		if (!value) return undefined;
-		const number = Number(value);
-		const date = Number.isFinite(number)
-			? new Date(number < 1000000000000 ? number * 1000 : number)
-			: new Date(value);
+		const text = String(value);
+		let date;
+		if (/^\d+$/.test(text)) {
+			const number = Number(text);
+			date = new Date(text.length <= 10 ? number * 1000 : number);
+		} else {
+			date = new Date(value);
+		}
 		return Number.isNaN(date.getTime()) ? undefined : date;
 	}
 	function tagsOf(workflow) {
@@ -99,6 +104,7 @@
 				state.selectedOrgId = id;
 				state.organizationSearch = '';
 				state.organizationPickerOpen = false;
+				state.catalogOrgId = '';
 				state.workflows = [];
 				state.visibleIds = [];
 				state.selectedIds = [];
@@ -284,8 +290,17 @@
 		if (message.type === 'bootstrap') {
 			state.organizations = message.organizations || [];
 			state.exporting = false;
+			state.catalogOrgId = typeof message.catalogOrgId === 'string' ? message.catalogOrgId : '';
 			if (Number.isInteger(message.maxWorkflowsPerExport) && message.maxWorkflowsPerExport > 0)
 				state.maxWorkflowsPerExport = message.maxWorkflowsPerExport;
+			if (!state.organizations.some(org => org.id === state.selectedOrgId)) {
+				state.selectedOrgId = '';
+				state.catalogOrgId = '';
+				state.workflows = [];
+				state.visibleIds = [];
+				state.selectedIds = [];
+				state.tags = [];
+			}
 			if (!state.selectedOrgId) state.selectedOrgId = state.organizations[0]?.id || '';
 			state.destination = state.destination || {
 				kind: 'directory',
@@ -296,12 +311,14 @@
 			app.getElementById('progress').value = 0;
 			save();
 			render();
-			if (state.selectedOrgId && !state.workflows.length) loadCatalog();
+			if (state.selectedOrgId && (!state.workflows.length || state.catalogOrgId !== state.selectedOrgId))
+				loadCatalog();
 		}
 		if (message.type === 'organizations') {
 			state.organizations = message.organizations || [];
 			if (!state.organizations.some(org => org.id === state.selectedOrgId)) {
 				state.selectedOrgId = '';
+				state.catalogOrgId = '';
 				state.workflows = [];
 				state.visibleIds = [];
 				state.selectedIds = [];
@@ -314,6 +331,7 @@
 			app.getElementById('refreshCatalog').disabled = true;
 		}
 		if (message.type === 'catalogLoaded') {
+			state.catalogOrgId = typeof message.orgId === 'string' ? message.orgId : state.selectedOrgId;
 			state.workflows = message.workflows || [];
 			state.visibleIds = state.workflows.map(workflow => workflow.id);
 			state.tags = message.tags || [];

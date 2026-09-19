@@ -108,6 +108,15 @@ suite('Unit: package manifest', () => {
 		const ids = manifest.contributes.commands.map(entry => entry.command);
 		assert.ok(ids.includes('rewst-buddy.prefix.ExportWorkflows'));
 		assert.ok(ids.includes('rewst-buddy.prefix.OpenWorkflowExporter'));
+		assert.strictEqual(
+			manifest.contributes.commands.find(entry => entry.command === 'rewst-buddy.prefix.ExportWorkflows')?.title,
+			'Rewst Buddy: Export Workflows',
+		);
+		assert.strictEqual(
+			manifest.contributes.commands.find(entry => entry.command === 'rewst-buddy.prefix.OpenWorkflowExporter')
+				?.title,
+			'Rewst Buddy: Open Workflow Exporter',
+		);
 		const paletteEntries = manifest.contributes.menus?.commandPalette ?? [];
 		for (const command of ['rewst-buddy.prefix.ExportWorkflows', 'rewst-buddy.prefix.OpenWorkflowExporter']) {
 			assert.strictEqual(

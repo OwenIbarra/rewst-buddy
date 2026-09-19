@@ -1,5 +1,4 @@
-import { SessionManager } from '@sessions';
-import { createMockSession, initTestEnvironment, stub } from '@test';
+import { createMockSession, initTestEnvironment, installMockSessions, stub } from '@test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
@@ -67,12 +66,12 @@ suite('Unit: WorkflowExportViewProvider', () => {
 
 	setup(() => {
 		initTestEnvironment();
-		SessionManager._resetForTesting();
+		installMockSessions([]);
 	});
 
 	teardown(() => {
 		while (restores.length) restores.pop()!();
-		SessionManager._resetForTesting();
+		installMockSessions([]);
 	});
 
 	function stubClient<K extends keyof typeof editorDataClient>(key: K, value: (typeof editorDataClient)[K]): void {
@@ -90,7 +89,7 @@ suite('Unit: WorkflowExportViewProvider', () => {
 				allManagedOrgs: [{ id: orgId, name: orgName }],
 			},
 		});
-		SessionManager._setSessionsForTesting([session], false);
+		installMockSessions([session]);
 	}
 
 	function workflowRows(count: number): {
@@ -172,6 +171,90 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		);
 	});
 
+	test('skips organizations unless at least one active session has a usable id', () => {
+		const { session: unusable } = createMockSession({
+			profile: {
+				org: { id: 'org-1', name: 'Org One' },
+				allManagedOrgs: [{ id: 'org-1', name: 'Org One' }],
+			},
+		});
+		const { session: usable } = createMockSession({
+			profile: {
+				org: { id: 'org-1', name: 'Org One' },
+				allManagedOrgs: [{ id: 'org-1', name: 'Org One' }],
+			},
+		});
+		unusable.profile.user.id = null;
+		usable.profile.user.id = 'user-valid';
+
+		assert.deepStrictEqual(workflowExportOrganizations([unusable]), []);
+		assert.deepStrictEqual(workflowExportOrganizations([unusable, usable]), [{ id: 'org-1', name: 'Org One' }]);
+	});
+
+	test('resolves each operation through a later capable session when the first is invalid', async () => {
+		const { session: first } = createMockSession({
+			profile: {
+				org: { id: 'org-1', name: 'Org One' },
+				allManagedOrgs: [{ id: 'org-1', name: 'Org One' }],
+			},
+		});
+		const { session: second } = createMockSession({
+			profile: {
+				org: { id: 'org-1', name: 'Org One' },
+				allManagedOrgs: [{ id: 'org-1', name: 'Org One' }],
+			},
+		});
+		first.profile.user.id = 'user-invalid';
+		second.profile.user.id = 'user-valid';
+		let firstChecks = 0;
+		let secondChecks = 0;
+		restores.push(
+			stub(first, 'ensureValid', async () => {
+				firstChecks++;
+				return false;
+			}),
+		);
+		restores.push(
+			stub(second, 'ensureValid', async () => {
+				secondChecks++;
+				return true;
+			}),
+		);
+		installMockSessions([first, second]);
+		const catalogSessionIds: string[] = [];
+		const exportSessionIds: string[] = [];
+		stubClient(
+			'getWorkflowExportDefaultDirectory',
+			(async () => '/exports') as typeof editorDataClient.getWorkflowExportDefaultDirectory,
+		);
+		stubClient('listExportWorkflows', (async input => {
+			catalogSessionIds.push(input.sessionId);
+			return workflowRows(1);
+		}) as typeof editorDataClient.listExportWorkflows);
+		stubClient('exportWorkflows', (async input => {
+			exportSessionIds.push(input.sessionId);
+			return exportResult(input.workflowIds, input.outputPath ?? null);
+		}) as typeof editorDataClient.exportWorkflows);
+		const provider = new WorkflowExportViewProvider(vscode.Uri.file('/extension'));
+		const fake = fakeView();
+		provider.resolveWebviewView(fake.view);
+
+		await fake.state.listener?.({ type: 'ready' });
+		await fake.state.listener?.({ type: 'loadCatalog', orgId: 'org-1' });
+		await fake.state.listener?.({
+			type: 'startExport',
+			orgId: 'org-1',
+			workflowIds: ['wf-1'],
+			mode: 'bundle',
+		});
+
+		assert.deepStrictEqual(catalogSessionIds, ['user-valid']);
+		assert.deepStrictEqual(exportSessionIds, ['user-valid']);
+		assert.strictEqual(firstChecks, 2);
+		assert.strictEqual(secondChecks, 2);
+		provider.dispose();
+	});
+
 	test('renders a script-enabled persistent workflow exporter without embedding credentials', () => {
 		const provider = new WorkflowExportViewProvider(vscode.Uri.file('/extension'));
 		const fake = fakeView();
@@ -222,6 +305,16 @@ suite('Unit: WorkflowExportViewProvider', () => {
 			messagesOfType(fake, 'bootstrap').at(-1)?.maxWorkflowsPerExport,
 			WORKFLOW_EXPORT_BOOTSTRAP_PAYLOAD.maxWorkflowsPerExport,
 		);
+		assert.strictEqual(messagesOfType(fake, 'bootstrap').at(-1)?.catalogOrgId, null);
+		provider.dispose();
+	});
+
+	test('bootstraps the organization whose catalog is currently loaded', async () => {
+		const { provider, fake } = await loadProviderCatalog(workflowRows(1));
+
+		await fake.state.listener?.({ type: 'ready' });
+
+		assert.strictEqual(messagesOfType(fake, 'bootstrap').at(-1)?.catalogOrgId, 'org-1');
 		provider.dispose();
 	});
 
@@ -362,7 +455,7 @@ suite('Unit: WorkflowExportViewProvider', () => {
 				allManagedOrgs: [{ id: 'org-1', name: 'Org One' }],
 			},
 		});
-		SessionManager._setSessionsForTesting([session], false);
+		installMockSessions([session]);
 		const exportCalls: { workflowIds: string[]; outputPath?: string }[] = [];
 		stubClient(
 			'getWorkflowExportDefaultDirectory',

@@ -16,6 +16,7 @@ import {
 	MAX_WORKFLOW_EXPORT_BATCH_SIZE,
 	WORKFLOW_CATALOG_CACHE_KEY,
 	chooseWorkflowCatalog,
+	exportWorkflowBatchToAvailablePath,
 	pickDestination,
 	persistWorkflowCatalog,
 	readCachedWorkflowCatalog,
@@ -282,7 +283,7 @@ suite('Unit: ExportWorkflows helpers', () => {
 		}
 	});
 
-	test('webview clears stale catalog state, reapplies filters, and honors the host bundle limit', () => {
+	test('webview refreshes stale catalogs, renders timestamp digit counts, and honors the host bundle limit', () => {
 		class FakeElement {
 			value = '';
 			checked = false;
@@ -320,7 +321,11 @@ suite('Unit: ExportWorkflows helpers', () => {
 				getState: () => ({
 					organizations: [{ id: 'org-1', name: 'Org One' }],
 					selectedOrgId: 'org-1',
-					workflows: [{ id: 'wf-1' }, { id: 'wf-2' }, { id: 'wf-3' }],
+					workflows: [
+						{ id: 'wf-1', name: 'Epoch seconds', updatedAt: '946728000' },
+						{ id: 'wf-2', name: 'Epoch milliseconds', updatedAt: '946728000000' },
+						{ id: 'wf-3', name: 'Invalid timestamp', updatedAt: 'not-a-date' },
+					],
 					visibleIds: ['wf-1', 'wf-2', 'wf-3'],
 					selectedIds: ['wf-1', 'wf-2', 'wf-3'],
 					tags: [],
@@ -348,17 +353,51 @@ suite('Unit: ExportWorkflows helpers', () => {
 			Number,
 			String,
 		});
+		assert.strictEqual((element('workflowList').innerHTML.match(/2000/g) ?? []).length, 2);
+		assert.match(element('workflowList').innerHTML, /edited unknown/);
 
 		listener?.({
-			data: { type: 'bootstrap', organizations: [{ id: 'org-1', name: 'Org One' }], maxWorkflowsPerExport: 2 },
+			data: {
+				type: 'bootstrap',
+				organizations: [{ id: 'org-1', name: 'Org One' }],
+				catalogOrgId: 'org-other',
+				maxWorkflowsPerExport: 2,
+			},
 		});
 		assert.strictEqual(element('chooseFile').disabled, true);
+		assert.strictEqual(savedState?.catalogOrgId, 'org-other');
+		assert.ok(posted.some(message => message.type === 'loadCatalog' && message.orgId === 'org-1'));
 		posted.length = 0;
-		listener?.({ data: { type: 'catalogLoaded', workflows: [{ id: 'wf-1' }], tags: [] } });
+		listener?.({ data: { type: 'catalogLoaded', orgId: 'org-1', workflows: [{ id: 'wf-1' }], tags: [] } });
 		assert.strictEqual(posted.at(-1)?.type, 'applyFilters');
 		assert.strictEqual((posted.at(-1)?.filters as { search?: string })?.search, 'daily');
-		listener?.({ data: { type: 'organizations', organizations: [{ id: 'org-2', name: 'Org Two' }] } });
+		assert.strictEqual(savedState?.catalogOrgId, 'org-1');
+		listener?.({ data: { type: 'catalogLoaded', orgId: 'org-1', workflows: [], tags: [] } });
+		posted.length = 0;
+		listener?.({
+			data: {
+				type: 'bootstrap',
+				organizations: [{ id: 'org-1', name: 'Org One' }],
+				catalogOrgId: 'org-1',
+				maxWorkflowsPerExport: 2,
+			},
+		});
+		assert.ok(posted.some(message => message.type === 'loadCatalog' && message.orgId === 'org-1'));
+		posted.length = 0;
+		listener?.({
+			data: {
+				type: 'bootstrap',
+				organizations: [{ id: 'org-2', name: 'Org Two' }],
+				catalogOrgId: null,
+				maxWorkflowsPerExport: 2,
+			},
+		});
+		assert.strictEqual(savedState?.selectedOrgId, 'org-2');
+		assert.ok(posted.some(message => message.type === 'loadCatalog' && message.orgId === 'org-2'));
+		assert.ok(!posted.some(message => message.type === 'loadCatalog' && message.orgId === 'org-1'));
+		listener?.({ data: { type: 'organizations', organizations: [{ id: 'org-3', name: 'Org Three' }] } });
 		assert.strictEqual(savedState?.selectedOrgId, '');
+		assert.strictEqual(savedState?.catalogOrgId, '');
 		assert.strictEqual((savedState?.workflows as unknown[])?.length, 0);
 		assert.strictEqual((savedState?.visibleIds as unknown[])?.length, 0);
 		assert.strictEqual((savedState?.selectedIds as unknown[])?.length, 0);
@@ -435,6 +474,38 @@ suite('Unit: ExportWorkflows helpers', () => {
 			),
 			'/exports/Daily - User- Sync--wf-123.json',
 		);
+	});
+
+	test('exports twice to the same folder with distinct unused output files', async () => {
+		const existing = new Set<string>();
+		const outputPaths: string[] = [];
+		const request = {
+			destination: { kind: 'directory' as const, outputPath: '/exports' },
+			defaultDirectory: '/default',
+			mode: 'bundle' as const,
+			workflows: [workflow('wf-1')],
+			batchIndex: 0,
+			batchCount: 1,
+		};
+		const exportOnce = () =>
+			exportWorkflowBatchToAvailablePath(
+				request,
+				async outputPath => {
+					assert.ok(outputPath);
+					existing.add(outputPath);
+					outputPaths.push(outputPath);
+					return result(['wf-1'], outputPath);
+				},
+				async path => existing.has(path),
+			);
+
+		await exportOnce();
+		await exportOnce();
+
+		assert.deepStrictEqual(outputPaths, [
+			'/exports/rewst-workflows-batch-001-of-001.json',
+			'/exports/rewst-workflows-batch-001-of-001-2.json',
+		]);
 	});
 
 	test('bundle mode sends all selected ids in one backend operation', async () => {

@@ -152,4 +152,17 @@ suite('Unit: workflow export catalog model', () => {
 			updatedTo: undefined,
 		});
 	});
+
+	test('treats invalid non-empty date bounds as unbounded', () => {
+		assert.deepStrictEqual(
+			filterWorkflowCatalog([workflow()], {
+				search: '',
+				tagIds: [],
+				tagMatch: 'any',
+				createdFrom: 'not-a-date',
+				updatedTo: 'also-not-a-date',
+			}),
+			[workflow()],
+		);
+	});
 });

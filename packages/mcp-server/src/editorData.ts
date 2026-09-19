@@ -252,7 +252,7 @@ async function previewWorkflows(
 			)?.workflows ?? [];
 		const usable = pageRows.filter((row): row is PreviewWorkflowRow => !!row?.id);
 		rows.push(...usable);
-		if (usable.length < WORKFLOW_PICK_LIMIT) break;
+		if (pageRows.length < WORKFLOW_PICK_LIMIT) break;
 	}
 	return rows;
 }
