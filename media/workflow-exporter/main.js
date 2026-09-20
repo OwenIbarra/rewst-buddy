@@ -176,11 +176,12 @@
 	}
 	function renderDestination() {
 		const destination = state.destination || { kind: 'directory', isDefault: true };
+		const selectedCount = selected().size;
 		app.getElementById('destinationPath').textContent = destination.isDefault
 			? 'Default Rewst export folder'
 			: destination.path || 'Selected folder';
 		app.getElementById('chooseFile').disabled =
-			state.mode !== 'bundle' || selected().size > state.maxWorkflowsPerExport;
+			state.mode !== 'bundle' || selectedCount === 0 || selectedCount > state.maxWorkflowsPerExport;
 	}
 	function renderActions() {
 		const count = selected().size;
@@ -322,6 +323,8 @@
 				state.workflows = [];
 				state.visibleIds = [];
 				state.selectedIds = [];
+				state.tags = [];
+				state.filters.tagIds = [];
 			}
 			save();
 			render();

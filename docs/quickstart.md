@@ -8,13 +8,13 @@ Use this guide when you want to edit Rewst templates locally. For AI tool access
 
 Install the [VS Code companion](https://marketplace.visualstudio.com/items?itemName=JBramley.rewst-buddy), then choose an editing workflow.
 
-Two paths are available depending on how much of an organization you want to pull local. Pick one — you can always switch later.
+Three paths are available depending on how much of an organization you want to pull local. Pick one — you can always switch later.
 
 - [Link a Single Template](#link-a-single-template) — tweak one script or HTML snippet (recommended first run)
 - [Bulk Folder Workflow](#bulk-folder-workflow) — mirror an entire organization's templates locally
 - [Export Workflows](#export-workflows) — select and save workflows as files or signed bundles
 
-Before either path, do the [First-time session setup](#first-time-session-setup).
+Before any of these paths, do the [First-time session setup](#first-time-session-setup).
 
 ## First-time session setup
 
