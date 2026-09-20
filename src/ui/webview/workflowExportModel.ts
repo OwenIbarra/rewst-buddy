@@ -101,11 +101,11 @@ function dateCeiling(value: string | undefined): number | undefined {
 }
 
 function withinDateRange(value: string | null | undefined, from?: string, to?: string): boolean {
-	if (!from && !to) return true;
-	const actual = timestamp(value);
-	if (actual === undefined) return false;
 	const minimum = dateFloor(from);
 	const maximum = dateCeiling(to);
+	if (minimum === undefined && maximum === undefined) return true;
+	const actual = timestamp(value);
+	if (actual === undefined) return false;
 	return (minimum === undefined || actual >= minimum) && (maximum === undefined || actual <= maximum);
 }
 

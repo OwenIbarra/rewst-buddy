@@ -184,7 +184,9 @@ suite('Integration: workflow export (read-only)', function () {
 						workflowIds: ['workflow-does-not-exist'],
 						outputPath: join(defaultDirectory, `rb-itest-editor-error-${Date.now()}.json`),
 					}),
-				/does not belong to organization|not found|workflow/i,
+				{
+					message: `Workflow workflow-does-not-exist was not found in org ${targetOrgId}.`,
+				},
 			);
 		} finally {
 			await unlink(outputPath).catch(() => {});

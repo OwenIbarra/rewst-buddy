@@ -165,4 +165,17 @@ suite('Unit: workflow export catalog model', () => {
 			[workflow()],
 		);
 	});
+
+	test('keeps missing timestamps when the only date bound is invalid', () => {
+		const missingCreatedAt = workflow({ createdAt: null });
+		assert.deepStrictEqual(
+			filterWorkflowCatalog([missingCreatedAt], {
+				search: '',
+				tagIds: [],
+				tagMatch: 'any',
+				createdFrom: 'not-a-date',
+			}),
+			[missingCreatedAt],
+		);
+	});
 });
