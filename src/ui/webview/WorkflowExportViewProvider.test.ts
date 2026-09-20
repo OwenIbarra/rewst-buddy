@@ -396,8 +396,8 @@ suite('Unit: WorkflowExportViewProvider', () => {
 					],
 					visibleIds: ['wf-1', 'wf-2', 'wf-3'],
 					selectedIds: ['wf-1', 'wf-2', 'wf-3'],
-					tags: [],
-					filters: { search: 'daily', tagIds: [], tagMatch: 'any' },
+					tags: [{ id: 'stale', name: 'Stale' }],
+					filters: { search: 'daily', tagIds: ['stale'], tagMatch: 'any' },
 					mode: 'bundle',
 				}),
 				setState: (value: Record<string, unknown>) => {
@@ -469,6 +469,8 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		assert.strictEqual((savedState?.workflows as unknown[])?.length, 0);
 		assert.strictEqual((savedState?.visibleIds as unknown[])?.length, 0);
 		assert.strictEqual((savedState?.selectedIds as unknown[])?.length, 0);
+		assert.strictEqual((savedState?.tags as unknown[])?.length, 0);
+		assert.strictEqual((savedState?.filters as { tagIds?: unknown[] })?.tagIds?.length, 0);
 	});
 
 	test('rehydrates persisted webview controls and clears stale export state on bootstrap', () => {
