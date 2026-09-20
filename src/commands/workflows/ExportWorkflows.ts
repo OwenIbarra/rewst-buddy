@@ -264,11 +264,24 @@ export async function validateWorkflowExportPath(
 	const path = value.trim();
 	if (!path) return 'Enter an export path.';
 	if (!isAbsolute(path)) return 'Enter an absolute export path.';
-	if (mode === 'bundle' && workflowCount <= MAX_WORKFLOW_EXPORT_BATCH_SIZE) return undefined;
 	try {
-		if ((await stat(path)).isDirectory()) return undefined;
-	} catch {
+		const target = await stat(path);
+		if (target.isDirectory()) return undefined;
+		if (mode === 'bundle' && workflowCount <= MAX_WORKFLOW_EXPORT_BATCH_SIZE) {
+			return 'Choose a new file name; workflow exports never overwrite files.';
+		}
+	} catch (error) {
 		// Keep filesystem details out of the input validation message.
+		if (
+			mode === 'bundle' &&
+			workflowCount <= MAX_WORKFLOW_EXPORT_BATCH_SIZE &&
+			error &&
+			typeof error === 'object' &&
+			'code' in error &&
+			error.code === 'ENOENT'
+		) {
+			return undefined;
+		}
 	}
 	return mode === 'bundle'
 		? 'Choose an existing export folder for bundled batch files.'

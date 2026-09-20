@@ -351,6 +351,126 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		);
 	});
 
+	test('webview refreshes stale catalogs, renders timestamp digit counts, and honors the host bundle limit', () => {
+		class FakeElement {
+			value = '';
+			checked = false;
+			disabled = false;
+			hidden = false;
+			textContent = '';
+			className = '';
+			innerHTML = '';
+			onclick?: (event: { currentTarget: FakeElement; target: FakeElement }) => void;
+			oninput?: (event: { target: FakeElement }) => void;
+			onchange?: (event: { target: FakeElement }) => void;
+			dataset: Record<string, string> = {};
+			querySelectorAll(): FakeElement[] {
+				return [];
+			}
+			focus(): void {}
+		}
+		const elements = new Map<string, FakeElement>();
+		const element = (id: string): FakeElement => {
+			let result = elements.get(id);
+			if (!result) {
+				result = new FakeElement();
+				elements.set(id, result);
+			}
+			return result;
+		};
+		const modeRadios = ['separate', 'bundle'].map(value => Object.assign(new FakeElement(), { value }));
+		const tagRadios = ['any', 'all'].map(value => Object.assign(new FakeElement(), { value }));
+		let listener: ((event: { data: Record<string, unknown> }) => void) | undefined;
+		let savedState: Record<string, unknown> | undefined;
+		const posted: Record<string, unknown>[] = [];
+		const source = readFileSync(join(process.cwd(), 'media/workflow-exporter/main.js'), 'utf8');
+		vm.runInNewContext(source, {
+			acquireVsCodeApi: () => ({
+				getState: () => ({
+					organizations: [{ id: 'org-1', name: 'Org One' }],
+					selectedOrgId: 'org-1',
+					workflows: [
+						{ id: 'wf-1', name: 'Epoch seconds', updatedAt: '946728000' },
+						{ id: 'wf-2', name: 'Epoch milliseconds', updatedAt: '946728000000' },
+						{ id: 'wf-3', name: 'Invalid timestamp', updatedAt: 'not-a-date' },
+					],
+					visibleIds: ['wf-1', 'wf-2', 'wf-3'],
+					selectedIds: ['wf-1', 'wf-2', 'wf-3'],
+					tags: [],
+					filters: { search: 'daily', tagIds: [], tagMatch: 'any' },
+					mode: 'bundle',
+				}),
+				setState: (value: Record<string, unknown>) => {
+					savedState = value;
+				},
+				postMessage: (message: Record<string, unknown>) => {
+					posted.push(message);
+				},
+			}),
+			document: {
+				getElementById: element,
+				querySelectorAll: (selector: string) => (selector.includes('tagMatch') ? tagRadios : modeRadios),
+			},
+			window: {
+				addEventListener: (_type: string, handler: typeof listener) => {
+					listener = handler;
+				},
+			},
+			Set,
+			Date,
+			Number,
+			String,
+		});
+		assert.strictEqual((element('workflowList').innerHTML.match(/2000/g) ?? []).length, 2);
+		assert.match(element('workflowList').innerHTML, /edited unknown/);
+
+		listener?.({
+			data: {
+				type: 'bootstrap',
+				organizations: [{ id: 'org-1', name: 'Org One' }],
+				catalogOrgId: 'org-other',
+				maxWorkflowsPerExport: 2,
+			},
+		});
+		assert.strictEqual(element('chooseFile').disabled, true);
+		assert.strictEqual(savedState?.catalogOrgId, 'org-other');
+		assert.ok(posted.some(message => message.type === 'loadCatalog' && message.orgId === 'org-1'));
+		posted.length = 0;
+		listener?.({ data: { type: 'catalogLoaded', orgId: 'org-1', workflows: [{ id: 'wf-1' }], tags: [] } });
+		assert.strictEqual(posted.at(-1)?.type, 'applyFilters');
+		assert.strictEqual((posted.at(-1)?.filters as { search?: string })?.search, 'daily');
+		assert.strictEqual(savedState?.catalogOrgId, 'org-1');
+		listener?.({ data: { type: 'catalogLoaded', orgId: 'org-1', workflows: [], tags: [] } });
+		posted.length = 0;
+		listener?.({
+			data: {
+				type: 'bootstrap',
+				organizations: [{ id: 'org-1', name: 'Org One' }],
+				catalogOrgId: 'org-1',
+				maxWorkflowsPerExport: 2,
+			},
+		});
+		assert.ok(posted.some(message => message.type === 'loadCatalog' && message.orgId === 'org-1'));
+		posted.length = 0;
+		listener?.({
+			data: {
+				type: 'bootstrap',
+				organizations: [{ id: 'org-2', name: 'Org Two' }],
+				catalogOrgId: null,
+				maxWorkflowsPerExport: 2,
+			},
+		});
+		assert.strictEqual(savedState?.selectedOrgId, 'org-2');
+		assert.ok(posted.some(message => message.type === 'loadCatalog' && message.orgId === 'org-2'));
+		assert.ok(!posted.some(message => message.type === 'loadCatalog' && message.orgId === 'org-1'));
+		listener?.({ data: { type: 'organizations', organizations: [{ id: 'org-3', name: 'Org Three' }] } });
+		assert.strictEqual(savedState?.selectedOrgId, '');
+		assert.strictEqual(savedState?.catalogOrgId, '');
+		assert.strictEqual((savedState?.workflows as unknown[])?.length, 0);
+		assert.strictEqual((savedState?.visibleIds as unknown[])?.length, 0);
+		assert.strictEqual((savedState?.selectedIds as unknown[])?.length, 0);
+	});
+
 	test('rehydrates persisted webview controls and clears stale export state on bootstrap', () => {
 		class FakeElement {
 			value = '';
