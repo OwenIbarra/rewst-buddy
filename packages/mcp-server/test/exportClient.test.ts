@@ -89,6 +89,33 @@ describe('cookie-authenticated export websocket', () => {
 		expect(mocks.dispose).toHaveBeenCalled();
 	});
 
+	it.each([
+		['template', ['template-1', 'template-2'], 'rewst-templates-export.json'],
+		['form', ['form-1'], 'rewst-forms-export.json'],
+	] as const)('uses generic %s requests and a type-specific fallback filename', async (type, ids, fallback) => {
+		mocks.iterate.mockReturnValue(
+			results({
+				data: {
+					exportObjects: {
+						...success.data.exportObjects,
+						recommendedFilename: '',
+					},
+				},
+			}),
+		);
+		const objects = ids.map(id => ({ type, id }));
+
+		const result = await runExportObjects({ session: session(), objects });
+
+		expect(mocks.iterate).toHaveBeenCalledExactlyOnceWith({
+			query: EXPORT_OBJECTS_SUBSCRIPTION,
+			variables: { objects },
+		});
+		expect(result.recommendedFilename).toBe(fallback);
+		expect(result.bundle).toBe(bundle);
+		expect(mocks.dispose).toHaveBeenCalled();
+	});
+
 	it('redacts GraphQL errors and disposes without retaining a partial bundle', async () => {
 		mocks.iterate.mockReturnValue(results({ errors: [{ message: 'Rejected fixture-token' }] }));
 		await expect(runExportObjects({ session: session(), workflowIds: ['wf'] })).rejects.toThrow(

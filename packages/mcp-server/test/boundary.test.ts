@@ -25,6 +25,9 @@ describe('standalone capability boundary', () => {
 		expect(new Set(names).size).toBe(names.length);
 		expect(names).toContain('buddy_get_template');
 		expect(names).toContain('buddy_workflow_get');
+		expect(names).toContain('buddy_export_workflows');
+		expect(names).toContain('buddy_export_templates');
+		expect(names).toContain('buddy_export_forms');
 		expect(names).not.toContain('buddy_search_template_links');
 		expect(names).not.toContain('buddy_template_sync');
 	});

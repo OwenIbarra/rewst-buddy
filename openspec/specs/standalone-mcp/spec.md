@@ -224,24 +224,24 @@ clearly when no editor is attached.
 - **THEN** the server validates and retains the session
 - **AND** public MCP tools can use it subject to the owner's scope and policy
 
-### Requirement: Read-only workflow export with optional local save
+### Requirement: Read-only workflow, template, and form export with optional local save
 
-The server SHALL expose `buddy_export_workflows` as a read capability that
-preserves Rewst's signed export bundle unchanged, with signing intact, whether
-saved to `outputPath` or returned inline. It SHALL
-verify every requested workflow id belongs to the requested organization before
-exporting and fail closed otherwise. Inline results SHALL include the bundle
-only when `outputPath` is absent or `includeBundle` is true; saved-output
-results MAY return metadata without the bundle when `includeBundle` is false.
-When `outputPath` names an existing
-directory the server SHALL save under the server-recommended filename; pointing
+The server SHALL expose `buddy_export_workflows`, `buddy_export_templates`, and
+`buddy_export_forms` as read capabilities that preserve Rewst's signed export
+bundle unchanged, with signing intact, whether saved to `outputPath` or returned
+inline. Each capability SHALL verify every requested object id belongs to the
+requested organization before starting the export subscription or writing to
+local storage, and fail closed for missing or cross-organization ids. Inline
+results SHALL include the bundle only when `outputPath` is absent or
+`includeBundle` is true; saved-output results MAY return metadata without the
+bundle when `includeBundle` is false. When `outputPath` names an existing
+directory, the server SHALL save under the server-recommended filename; pointing
 `outputPath` at the Downloads folder itself SHALL save inside a `Rewst Exports`
 subfolder, created when missing; when `outputPath` is omitted the server SHALL
 save under `rewst-buddy.mcp.exportDefaultDir`, falling back to
 `<home>/Downloads/Rewst Exports` when empty, creating the directory when
-missing; local
-writes SHALL be atomic and never replace an existing file. Large bundles SHALL
-remain pageable through `buddy_result_read`.
+missing; local writes SHALL be atomic and never replace an existing file. Large
+bundles SHALL remain pageable through `buddy_result_read`.
 
 #### Scenario: Export then save a workflow bundle
 
@@ -249,6 +249,13 @@ remain pageable through `buddy_result_read`.
 - **WHEN** a client exports that workflow with an `outputPath` under an approved local root
 - **THEN** the server returns the saved status with the unchanged signed bundle metadata
 - **AND** no Rewst state is changed
+
+#### Scenario: Reject a missing or cross-organization template or form
+
+- **GIVEN** one or more template or form ids that are missing or owned by another organization
+- **WHEN** a client requests their export
+- **THEN** the server validates requested ids and rejects the request before opening the export subscription
+- **AND** no local export directory is created or bundle is written
 
 ### Requirement: Authenticated subscription transport boundaries
 

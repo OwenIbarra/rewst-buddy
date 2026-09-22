@@ -54,7 +54,7 @@ export interface CallToolParams {
 	name: string;
 	arguments?: Record<string, unknown>;
 	orgId?: string;
-	/** Optional cancellation for subscription-backed tools (buddy_export_workflows, buddy_unpack_crate), supplied by the caller. */
+	/** Optional cancellation for subscription-backed export and crate-unpack tools, supplied by the caller. */
 	signal?: AbortSignal;
 	/** Who is calling, for the host approval wording. Defaults to an external MCP client. */
 	origin?: ApprovalOrigin;
@@ -269,10 +269,18 @@ export async function callRuntimeWriteTool(name: string, run: () => Promise<unkn
 }
 
 /** Subscription-backed tools whose websocket flow honors caller cancellation. */
-const CANCELLABLE_SUBSCRIPTION_TOOLS = new Set(['buddy_export_workflows', 'buddy_unpack_crate']);
+const CANCELLABLE_SUBSCRIPTION_TOOLS = new Set([
+	'buddy_export_workflows',
+	'buddy_export_templates',
+	'buddy_export_forms',
+	'buddy_unpack_crate',
+]);
 
 function cancellationMessage(toolName: string): string {
-	return toolName === 'buddy_unpack_crate' ? 'Crate unpack was cancelled.' : 'Workflow export was cancelled.';
+	if (toolName === 'buddy_unpack_crate') return 'Crate unpack was cancelled.';
+	if (toolName === 'buddy_export_templates') return 'Template export was cancelled.';
+	if (toolName === 'buddy_export_forms') return 'Form export was cancelled.';
+	return 'Workflow export was cancelled.';
 }
 
 function throwIfToolCancelled(signal: AbortSignal | undefined, toolName: string): void {

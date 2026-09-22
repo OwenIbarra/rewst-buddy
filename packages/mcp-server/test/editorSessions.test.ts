@@ -158,6 +158,23 @@ describe('editor session operations', () => {
 		expect(method).not.toHaveBeenCalled();
 	});
 
+	it('forwards editor cancellation to SDK operations', async () => {
+		const listTemplates = vi.fn().mockResolvedValue({ templates: [] });
+		const session = new Session(
+			{ User: vi.fn().mockResolvedValue({ user: profile().user }), listTemplates } as never,
+			profile(),
+		);
+		SessionManager._setSessionsForTesting([session]);
+		const controller = new AbortController();
+
+		await editorSessionOperations['session.sdk.listTemplates'](
+			{ sessionId: 'user-1', args: { orgId: 'org-root' } },
+			{ signal: controller.signal, emit: async () => {} },
+		);
+
+		expect(listTemplates).toHaveBeenCalledWith({ orgId: 'org-root' }, undefined, controller.signal);
+	});
+
 	it('keeps SDK operation names finite and rejects raw cookie access', () => {
 		expect(editorSessionSdkMethods).toContain('getTemplate');
 		expect(editorSessionSdkMethods).not.toContain('rawGraphql');

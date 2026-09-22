@@ -185,6 +185,7 @@ function describeFailures(value: unknown, secrets: readonly string[]): string {
 export function classifyExportEvent(
 	payload: unknown,
 	redactionSecrets: readonly string[] = [],
+	fallbackFilename = 'rewst-workflows-export.json',
 ): ClassifiedExportEvent | undefined {
 	if (payload === null || typeof payload !== 'object') return undefined;
 	const event = payload as RawExportEvent;
@@ -221,7 +222,7 @@ export function classifyExportEvent(
 	) {
 		return {
 			kind: 'success',
-			recommendedFilename: optionalString(event.recommendedFilename) ?? 'rewst-workflows-export.json',
+			recommendedFilename: optionalString(event.recommendedFilename) ?? fallbackFilename,
 			bundle: event.bundle as ExportBundle,
 		};
 	}
@@ -290,6 +291,9 @@ export interface CollectExportOptions {
 	signal?: AbortSignal;
 	redactionSecrets?: readonly string[];
 	onProgress?: (progress: ExportProgress) => void;
+	/** Defaults preserve the original workflow-export wording and fallback. */
+	operationName?: string;
+	fallbackFilename?: string;
 }
 
 /** Consumes export events until strict terminal success or a useful failure. */
@@ -298,36 +302,40 @@ export async function collectExportOutcome(
 	options: CollectExportOptions = {},
 ): Promise<ExportObjectsSuccess> {
 	const timeoutMs = options.inactivityTimeoutMs ?? DEFAULT_EXPORT_INACTIVITY_TIMEOUT_MS;
+	const operationName = options.operationName ?? 'Workflow export';
+	const fallbackFilename = options.fallbackFilename ?? 'rewst-workflows-export.json';
 	const iterator = payloads[Symbol.asyncIterator]();
 	try {
 		for (;;) {
-			if (options.signal?.aborted) throw new Error('Workflow export was cancelled.');
+			if (options.signal?.aborted) throw new Error(`${operationName} was cancelled.`);
 			const step = iterator.next();
 			let next: IteratorResult<unknown> | typeof TIMED_OUT | typeof CANCELLED;
 			try {
 				next = await nextWithControls(step, timeoutMs, options.signal);
 			} catch (error) {
-				if (options.signal?.aborted) throw new Error('Workflow export was cancelled.');
+				if (options.signal?.aborted) throw new Error(`${operationName} was cancelled.`);
 				throw error;
 			}
 			if (next === TIMED_OUT || next === CANCELLED) {
 				step.catch(() => {});
 				options.abort?.();
-				if (next === CANCELLED) throw new Error('Workflow export was cancelled.');
-				throw new Error(`No workflow export progress for ${Math.round(timeoutMs / 1000)}s; gave up.`);
+				if (next === CANCELLED) throw new Error(`${operationName} was cancelled.`);
+				throw new Error(
+					`No ${operationName.toLowerCase()} progress for ${Math.round(timeoutMs / 1000)}s; gave up.`,
+				);
 			}
-			if (options.signal?.aborted) throw new Error('Workflow export was cancelled.');
+			if (options.signal?.aborted) throw new Error(`${operationName} was cancelled.`);
 			if (next.done) {
-				throw new Error('The workflow export stream ended without reporting success.');
+				throw new Error(`The ${operationName.toLowerCase()} stream ended without reporting success.`);
 			}
 
-			const event = classifyExportEvent(next.value, options.redactionSecrets);
+			const event = classifyExportEvent(next.value, options.redactionSecrets, fallbackFilename);
 			if (event === undefined) continue;
 			if (event.kind === 'success') {
 				return { recommendedFilename: event.recommendedFilename, bundle: event.bundle };
 			}
 			if (event.kind === 'failure') {
-				throw new Error(`Workflow export failed: ${event.message}`);
+				throw new Error(`${operationName} failed: ${event.message}`);
 			}
 			options.onProgress?.(event.value);
 		}
