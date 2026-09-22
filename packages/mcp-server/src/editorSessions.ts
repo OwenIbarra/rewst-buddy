@@ -147,8 +147,8 @@ async function sdkOperation(
 		| ((args?: unknown, requestHeaders?: unknown, signal?: AbortSignal) => Promise<unknown>)
 		| undefined;
 	if (!fn) throw new Error(`SDK operation "${method}" is unavailable for this session.`);
-	if (method === 'listTemplates') return fn(args, undefined, context.signal);
-	return method === 'User' || args === undefined ? fn() : fn(args);
+	// Generated SDK methods keep the signal in the third slot even when their query has no variables.
+	return fn(args, undefined, context.signal);
 }
 
 async function create(input: Record<string, unknown>): Promise<SessionSnapshot> {

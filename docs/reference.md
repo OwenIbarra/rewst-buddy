@@ -12,20 +12,22 @@ Click the Rewst Buddy icon in the activity bar to open the sidebar:
     - Expired sessions display with red error icon
     - Sessions automatically refresh every 15 minutes to stay active
     - With automatic refresh, sessions can stay alive for about 1 week with daily extension use
-- **Workflow Exporter**: Browse, filter, select, and export workflows from an active organization. The view persists in the sidebar and retains its state across reloads.
+- **Rewst Exporter**: Browse, filter, select, and export workflows, templates, or forms from an active organization. The view persists in the sidebar and retains its state across reloads.
 
-### Workflow Exporter
+### Rewst Exporter
 
 The exporter supports:
 
-- Organization and workflow catalog selection
-- Search by workflow name or id
+- Organization and object type selection (**Workflows**, **Templates**, or **Forms**), followed by that type's catalog
+- Search by item name or ID
 - Tag filters with **any** or **all** matching
 - Created and updated date ranges
-- Exporting selected workflows as separate files or a signed bundle
+- Exporting selected items as separate files or signed bundles
 - Folder/file destination selection, progress reporting, cancellation, and failure summaries
 
 Exports do not overwrite existing files. Use the exporter’s destination controls to choose a new filename when needed.
+
+Workflow-only: `Rewst Buddy: Export Workflows` opens a catalog picker for quick workflow exports without opening the sidebar.
 
 ## Template Bundles Panel
 
@@ -89,19 +91,14 @@ All commands are available via Command Palette (Cmd/Ctrl + Shift + P) under the 
 - `Open Template from URL` — Open a template directly from URL
 - `Link File to Template from URL` — Link current file using a URL
 
-**Workflow Export**
-
-- `Rewst Buddy: Export Workflows` — Select one or more workflows and save their signed Rewst export bundle locally
-- `Rewst Buddy: Open Rewst Exporter` — Open the Rewst Exporter sidebar view
-
 **Template Bundles**
 
 - `Bundle Templates` — Rebuild template bundle groupings
 
 **Workflow Export**
 
-- `Open Workflow Exporter` — Open and focus the persistent workflow exporter in the Rewst Buddy sidebar
-- `Export Workflows` — Open the workflow catalog picker and export selected workflows without opening the sidebar view
+- `Rewst Buddy: Export Workflows` — Select one or more workflows and save their signed Rewst export bundle locally via the workflow catalog picker, without opening the sidebar view
+- `Rewst Buddy: Open Rewst Exporter` — Open and focus the Rewst Exporter sidebar view
 
 **Crates**
 

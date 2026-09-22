@@ -261,7 +261,7 @@
 	function renderDestination() {
 		const destination = state.destination || { kind: 'directory', isDefault: true };
 		app.getElementById('destinationPath').textContent = destination.isDefault
-			? 'Default Rewst export folder'
+			? destination.path || 'Default Rewst export folder'
 			: destination.path || 'Selected folder';
 		app.getElementById('chooseFile').disabled =
 			state.exporting || state.mode !== 'bundle' || selected().size > state.maxObjectsPerExport;
@@ -306,7 +306,6 @@
 				const objectType = event.currentTarget.dataset.objectType;
 				if (!objectTypes[objectType] || objectType === state.objectType) return;
 				state.objectType = objectType;
-				state.maxObjectsPerExport = 25;
 				clearCatalog();
 				setStatus('');
 				save();
@@ -409,11 +408,13 @@
 				state.selectedOrgId = state.organizations[0]?.id || '';
 				clearCatalog();
 			}
-			state.destination = state.destination || {
-				kind: 'directory',
-				path: message.defaultDirectory,
-				isDefault: true,
-			};
+			if (!state.destination || state.destination.isDefault !== false) {
+				state.destination = {
+					kind: (state.destination && state.destination.kind) || 'directory',
+					path: message.defaultDirectory ?? (state.destination && state.destination.path),
+					isDefault: true,
+				};
+			}
 			app.getElementById('progress').hidden = true;
 			app.getElementById('progress').value = 0;
 			save();

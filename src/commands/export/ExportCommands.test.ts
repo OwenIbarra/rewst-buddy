@@ -1,5 +1,8 @@
 import { SessionManager } from '@sessions';
 import { createMockSession, Fixtures, initTestEnvironment, stub, type Restore } from '@test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as assert from 'assert';
 import * as Mocha from 'mocha';
 import vscode from 'vscode';
@@ -254,8 +257,8 @@ suite('Unit: template and form export commands', () => {
 		await new ExportTemplates(dependencies).execute();
 
 		assert.deepStrictEqual(
-			calls.map(call => (call.arguments.templateIds as string[]).length),
-			[25, 1],
+			calls.map(call => call.arguments.templateIds),
+			[templates.slice(0, 25).map(template => template.id), [templates[25].id]],
 		);
 		assert.deepStrictEqual(
 			calls.map(call => call.arguments.outputPath),
@@ -267,6 +270,52 @@ suite('Unit: template and form export commands', () => {
 		assert.ok(calls.every(call => (call.arguments.templateIds as string[]).length <= 25));
 		assert.match(informationMessages[0], /Exported 26 templates across 2 signed bundle files/);
 	});
+
+	for (const destination of ['default', 'folder'] as const) {
+		test(`allocates distinct multi-batch template paths in the ${destination} directory when filenames are occupied`, async () => {
+			const directory = await mkdtemp(join(tmpdir(), `rewst-command-${destination}-`));
+			try {
+				await writeFile(join(directory, 'rewst-templates-batch-001-of-002.json'), 'occupied');
+				await writeFile(join(directory, 'rewst-templates-batch-001-of-002-2.json'), 'occupied');
+				await writeFile(join(directory, 'rewst-templates-batch-002-of-002.json'), 'occupied');
+				const { org, wrapper, calls, dependencies } = context();
+				const templates = Array.from({ length: 26 }, (_, index) =>
+					Fixtures.template({ id: `tpl-${index + 1}`, name: `Template ${index + 1}`, orgId: org.id }),
+				);
+				wrapper.when('listTemplates', { data: Fixtures.listTemplatesQuery(templates) });
+				dependencies.getDefaultDirectory = async () => directory;
+				selectItemsThenDestination(
+					templates.map(template => template.id),
+					destination,
+				);
+				if (destination === 'folder') {
+					restores.push(
+						stub(vscode.window, 'showOpenDialog', (async () => [
+							vscode.Uri.file(directory),
+						]) as typeof vscode.window.showOpenDialog),
+					);
+				}
+
+				await new ExportTemplates(dependencies).execute();
+
+				assert.deepStrictEqual(
+					calls.map(call => (call.arguments.templateIds as string[]).length),
+					[25, 1],
+				);
+				assert.deepStrictEqual(
+					calls.map(call => call.arguments.outputPath),
+					[
+						join(directory, 'rewst-templates-batch-001-of-002-3.json'),
+						join(directory, 'rewst-templates-batch-002-of-002-2.json'),
+					],
+				);
+				assert.strictEqual(new Set(calls.map(call => call.arguments.outputPath)).size, 2);
+				assert.deepStrictEqual(errorMessages, []);
+			} finally {
+				await rm(directory, { recursive: true, force: true });
+			}
+		});
+	}
 
 	test('reports shared batch progress and keeps completed exports when a later template batch fails', async () => {
 		const { org, wrapper, calls, dependencies } = context();

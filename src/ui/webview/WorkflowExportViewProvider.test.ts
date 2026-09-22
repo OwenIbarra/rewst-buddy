@@ -1,5 +1,7 @@
 import { SessionManager } from '@sessions';
 import { createMockSession, initTestEnvironment, stub } from '@test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as assert from 'assert';
 import * as Mocha from 'mocha';
@@ -125,14 +127,17 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		};
 	}
 
-	async function loadProviderCatalog(rows: ReturnType<typeof workflowRows>): Promise<{
+	async function loadProviderCatalog(
+		rows: ReturnType<typeof workflowRows>,
+		defaultDirectory = '/exports',
+	): Promise<{
 		provider: WorkflowExportViewProvider;
 		fake: ReturnType<typeof fakeView>;
 	}> {
 		setActiveOrganization();
 		stubClient(
 			'getWorkflowExportDefaultDirectory',
-			(async () => '/exports') as typeof editorDataClient.getWorkflowExportDefaultDirectory,
+			(async () => defaultDirectory) as typeof editorDataClient.getWorkflowExportDefaultDirectory,
 		);
 		stubClient('listExportWorkflows', (async () => rows) as typeof editorDataClient.listExportWorkflows);
 		const provider = new WorkflowExportViewProvider(vscode.Uri.file('/extension'));
@@ -888,8 +893,8 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		});
 
 		assert.deepStrictEqual(
-			calls.map(call => call.workflowIds.length),
-			[25, 1],
+			calls.map(call => call.workflowIds),
+			[rows.slice(0, 25).map(row => row.id), [rows[25].id]],
 		);
 		assert.deepStrictEqual(
 			calls.map(call => call.outputPath),
@@ -905,6 +910,180 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		});
 		assert.strictEqual(messagesOfType(fake, 'exportProgress').at(-1)?.percent, 100);
 		provider.dispose();
+	});
+
+	test('allocates distinct paths for separate workflow exports when generated names are occupied', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'rewst-provider-separate-'));
+		try {
+			await writeFile(join(directory, 'rewst-workflow-wf-1.json'), 'occupied');
+			await writeFile(join(directory, 'rewst-workflow-wf-1-2.json'), 'occupied');
+			const calls: Parameters<typeof editorDataClient.exportWorkflows>[0][] = [];
+			stubClient('exportWorkflows', (async input => {
+				calls.push(input);
+				return exportResult(input.workflowIds, input.outputPath ?? null);
+			}) as typeof editorDataClient.exportWorkflows);
+			const { provider, fake } = await loadProviderCatalog(workflowRows(2), directory);
+
+			await fake.state.listener?.({
+				type: 'startExport',
+				orgId: 'org-1',
+				workflowIds: ['wf-1', 'wf-2'],
+				mode: 'separate',
+			});
+
+			assert.deepStrictEqual(
+				calls.map(({ workflowIds, outputPath }) => ({ workflowIds, outputPath })),
+				[
+					{ workflowIds: ['wf-1'], outputPath: join(directory, 'rewst-workflow-wf-1-3.json') },
+					{ workflowIds: ['wf-2'], outputPath: join(directory, 'rewst-workflow-wf-2.json') },
+				],
+			);
+			assert.deepStrictEqual(
+				messagesOfType(fake, 'exportComplete').at(-1)?.outputPaths,
+				calls.map(call => call.outputPath),
+			);
+			provider.dispose();
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('allocates each workflow bundle inside the selected folder around occupied filenames', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'rewst-provider-bundles-'));
+		try {
+			await writeFile(join(directory, 'rewst-workflows-batch-001-of-002.json'), 'occupied');
+			await writeFile(join(directory, 'rewst-workflows-batch-002-of-002.json'), 'occupied');
+			restores.push(
+				stub(vscode.window, 'showOpenDialog', (async () => [
+					vscode.Uri.file(directory),
+				]) as typeof vscode.window.showOpenDialog),
+			);
+			const calls: Parameters<typeof editorDataClient.exportWorkflows>[0][] = [];
+			stubClient('exportWorkflows', (async input => {
+				calls.push(input);
+				return exportResult(input.workflowIds, input.outputPath ?? null);
+			}) as typeof editorDataClient.exportWorkflows);
+			const rows = workflowRows(26);
+			const { provider, fake } = await loadProviderCatalog(rows, join(directory, 'default'));
+
+			await fake.state.listener?.({ type: 'chooseFolder' });
+			await fake.state.listener?.({
+				type: 'startExport',
+				orgId: 'org-1',
+				workflowIds: rows.map(row => row.id),
+				mode: 'bundle',
+			});
+
+			assert.deepStrictEqual(
+				calls.map(call => [call.workflowIds.length, call.outputPath]),
+				[
+					[25, join(directory, 'rewst-workflows-batch-001-of-002-2.json')],
+					[1, join(directory, 'rewst-workflows-batch-002-of-002-2.json')],
+				],
+			);
+			assert.deepStrictEqual(
+				messagesOfType(fake, 'exportComplete').at(-1)?.outputPaths,
+				calls.map(call => call.outputPath),
+			);
+			provider.dispose();
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('passes a chosen workflow bundle filename verbatim to the backend', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'rewst-provider-file-'));
+		try {
+			const file = join(directory, 'chosen-workflow.json');
+			restores.push(
+				stub(vscode.window, 'showSaveDialog', (async () =>
+					vscode.Uri.file(file)) as typeof vscode.window.showSaveDialog),
+			);
+			const calls: Parameters<typeof editorDataClient.exportWorkflows>[0][] = [];
+			stubClient('exportWorkflows', (async input => {
+				calls.push(input);
+				return exportResult(input.workflowIds, input.outputPath ?? null);
+			}) as typeof editorDataClient.exportWorkflows);
+			const { provider, fake } = await loadProviderCatalog(workflowRows(1), directory);
+
+			await fake.state.listener?.({ type: 'chooseFile', objectCount: 1 });
+			await fake.state.listener?.({
+				type: 'startExport',
+				orgId: 'org-1',
+				workflowIds: ['wf-1'],
+				mode: 'bundle',
+			});
+
+			assert.deepStrictEqual(
+				calls.map(({ workflowIds, outputPath }) => ({ workflowIds, outputPath })),
+				[{ workflowIds: ['wf-1'], outputPath: file }],
+			);
+			provider.dispose();
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('passes explicit file and selected folder paths to template exports', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'rewst-provider-templates-'));
+		try {
+			const file = join(directory, 'chosen-template.json');
+			await writeFile(join(directory, 'rewst-templates-batch-001-of-001.json'), 'occupied');
+			setActiveOrganization();
+			stubClient('getWorkflowExportDefaultDirectory', (async () =>
+				join(directory, 'default')) as typeof editorDataClient.getWorkflowExportDefaultDirectory);
+			stubClient('listExportTemplates', (async () => [
+				{ ...workflowRows(1)[0], id: 'template-1', name: 'Template One' },
+			]) as typeof editorDataClient.listExportTemplates);
+			const calls: Parameters<typeof editorDataClient.exportObjects>[0][] = [];
+			stubClient('exportObjects', (async input => {
+				calls.push(input);
+				return {
+					status: 'saved',
+					orgId: input.orgId,
+					objectType: input.objectType,
+					objectIds: input.objectIds,
+					outputPath: input.outputPath ?? null,
+				};
+			}) as typeof editorDataClient.exportObjects);
+			restores.push(
+				stub(vscode.window, 'showSaveDialog', (async () =>
+					vscode.Uri.file(file)) as typeof vscode.window.showSaveDialog),
+				stub(vscode.window, 'showOpenDialog', (async () => [
+					vscode.Uri.file(directory),
+				]) as typeof vscode.window.showOpenDialog),
+			);
+			const provider = new WorkflowExportViewProvider(vscode.Uri.file('/extension'));
+			const fake = fakeView();
+			provider.resolveWebviewView(fake.view);
+			await fake.state.listener?.({ type: 'loadCatalog', orgId: 'org-1', objectType: 'template' });
+			await fake.state.listener?.({ type: 'chooseFile', objectType: 'template', objectCount: 1 });
+			const message = {
+				type: 'startExport',
+				orgId: 'org-1',
+				objectType: 'template',
+				objectIds: ['template-1'],
+				mode: 'bundle',
+			};
+			await fake.state.listener?.(message);
+			await fake.state.listener?.({ type: 'chooseFolder', objectType: 'template' });
+			await fake.state.listener?.(message);
+
+			assert.deepStrictEqual(
+				calls.map(({ objectType, objectIds, outputPath }) => ({ objectType, objectIds, outputPath })),
+				[
+					{ objectType: 'template', objectIds: ['template-1'], outputPath: file },
+					{
+						objectType: 'template',
+						objectIds: ['template-1'],
+						outputPath: join(directory, 'rewst-templates-batch-001-of-001-2.json'),
+					},
+				],
+			);
+			provider.dispose();
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
 	});
 
 	test('cancels an in-flight backend export and reports cancelled completion', async () => {

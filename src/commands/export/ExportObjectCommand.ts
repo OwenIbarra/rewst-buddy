@@ -5,7 +5,7 @@ import path from 'node:path';
 import vscode from 'vscode';
 import { editorDataClient, type ExportFormRow } from '../../backend/editorDataClient';
 import GenericCommand from '../GenericCommand';
-import { resolveExportOutputPath, runCatalogExports } from '../workflows/workflowExportEngine';
+import { exportBatchToAvailablePath, runCatalogExports } from '../workflows/workflowExportEngine';
 
 export type ExportCapabilityName = 'buddy_export_templates' | 'buddy_export_forms';
 export type ExportIdsField = 'templateIds' | 'formIds';
@@ -194,6 +194,7 @@ export default abstract class ExportObjectCommand extends GenericCommand {
 				orgId: org.id,
 				orgName: org.name,
 			}));
+			const catalogItemsById = new Map(catalogItems.map(item => [item.id, item]));
 			const exportOutcome = await withCancellableProgress(
 				{
 					location: vscode.ProgressLocation.Notification,
@@ -207,33 +208,54 @@ export default abstract class ExportObjectCommand extends GenericCommand {
 						this.config.singular,
 						'bundle',
 						async (ids, batchIndex, totalBatches) => {
-							const outputPath =
-								totalBatches === 1
-									? targetDirectory
-									: await resolveExportOutputPath(
-											{ kind: 'directory', outputPath: destination.outputPath },
-											targetDirectory,
-											this.config.singular,
-											'bundle',
-											catalogItems.filter(item => ids.includes(item.id)),
-											batchIndex,
-											totalBatches,
-										);
-							const rawResult = await this.dependencies.runCapability(
-								{
-									sessionId: requireSessionId(session),
-									orgId: org.id,
-									name: this.config.capabilityName,
-									arguments: {
+							if (totalBatches === 1) {
+								const rawResult = await this.dependencies.runCapability(
+									{
+										sessionId: requireSessionId(session),
 										orgId: org.id,
-										[this.config.idsField]: ids,
-										includeBundle: false,
-										...(outputPath ? { outputPath } : {}),
+										name: this.config.capabilityName,
+										arguments: {
+											orgId: org.id,
+											[this.config.idsField]: ids,
+											includeBundle: false,
+											...(targetDirectory ? { outputPath: targetDirectory } : {}),
+										},
 									},
+									signal,
+								);
+								return parseExportResult(rawResult);
+							}
+							return exportBatchToAvailablePath(
+								{
+									destination: { kind: 'directory', outputPath: destination.outputPath },
+									defaultDirectory: targetDirectory,
+									objectType: this.config.singular,
+									mode: 'bundle',
+									objects: ids.flatMap(id => {
+										const item = catalogItemsById.get(id);
+										return item ? [item] : [];
+									}),
+									batchIndex,
+									batchCount: totalBatches,
 								},
-								signal,
+								async outputPath => {
+									const rawResult = await this.dependencies.runCapability(
+										{
+											sessionId: requireSessionId(session),
+											orgId: org.id,
+											name: this.config.capabilityName,
+											arguments: {
+												orgId: org.id,
+												[this.config.idsField]: ids,
+												includeBundle: false,
+												...(outputPath ? { outputPath } : {}),
+											},
+										},
+										signal,
+									);
+									return parseExportResult(rawResult);
+								},
 							);
-							return parseExportResult(rawResult);
 						},
 						signal,
 						(message, increment) => progress.report({ message, increment }),

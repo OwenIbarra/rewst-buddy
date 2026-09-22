@@ -14,7 +14,14 @@ import { toCookieHeader } from '../sessions/graphqlWsTransport';
 import type { ToolSpecDefinition } from '../tools/toolProtocol';
 import type { Capability, CapabilityContext } from './Capability';
 import { readCapability } from './capabilityFactories';
-import { json, ORG_ID_FIELD, parseCapabilityInput, rawGraphqlOrThrow, toInputSchema } from './inputHelpers';
+import {
+	json,
+	mapWithConcurrency,
+	ORG_ID_FIELD,
+	parseCapabilityInput,
+	rawGraphqlOrThrow,
+	toInputSchema,
+} from './inputHelpers';
 
 export type SupportedExportObjectType = 'workflow' | 'template' | 'form';
 
@@ -133,13 +140,20 @@ export function createObjectExportCapability(config: ObjectExportCapabilityConfi
 		if (signal?.aborted) throw new Error(`${operationName} was cancelled.`);
 	}
 
+	// Bounded owner-lookup fan-out: up to MAX_WORKFLOWS_PER_EXPORT ids may be
+	// validated, so sequential awaits serialize that many GraphQL round trips
+	// while unbounded Promise.all risks throttling. Matches the limit used for
+	// per-item GraphQL fan-out in rewstReadCapabilities.
+	const OWNER_VALIDATION_CONCURRENCY = 10;
+
 	async function validateOwners(
 		ids: readonly string[],
 		orgId: string,
 		ctx: CapabilityContext,
 		redactionSecrets: readonly string[],
 	): Promise<void> {
-		for (const id of ids) {
+		throwIfCancelled(ctx.signal);
+		await mapWithConcurrency(ids, OWNER_VALIDATION_CONCURRENCY, async id => {
 			throwIfCancelled(ctx.signal);
 			let data: unknown;
 			try {
@@ -153,7 +167,7 @@ export function createObjectExportCapability(config: ObjectExportCapabilityConfi
 			if (!owner || owner.id !== id || owner.orgId !== orgId) {
 				throw new Error(`${config.objectLabel} ${id} was not found in org ${orgId}.`);
 			}
-		}
+		});
 	}
 
 	async function run(input: Record<string, unknown>, ctx: CapabilityContext): Promise<string> {

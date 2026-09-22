@@ -12,7 +12,7 @@ Three paths are available depending on how much of an organization you want to p
 
 - [Link a Single Template](#link-a-single-template) — tweak one script or HTML snippet (recommended first run)
 - [Bulk Folder Workflow](#bulk-folder-workflow) — mirror an entire organization's templates locally
-- [Export Workflows](#export-workflows) — select and save workflows as files or signed bundles
+- [Rewst Exporter](#rewst-exporter) — select and save workflows, templates, or forms as files or signed bundles
 
 Before any of these paths, do the [First-time session setup](#first-time-session-setup).
 
@@ -85,13 +85,13 @@ Sync-on-save is **off by default** — enable it per file by clicking the status
 
 To flip the default globally, set `rewst-buddy.syncOnSaveByDefault: true` in your settings — all linked files sync unless explicitly disabled. See [Auto-Sync on Save](features.md#auto-sync-on-save) for detail.
 
-## Export Workflows
+## Rewst Exporter
 
-The workflow exporter lets you browse an organization's workflow catalog and save selected workflows locally.
+The Rewst Exporter lets you browse an organization's workflows, templates, or forms and save selected items locally.
 
-1. Open the Rewst Buddy sidebar and select **Workflow Exporter**, or run `Rewst Buddy: Open Workflow Exporter` from the Command Palette.
-2. Choose an organization and wait for its workflow catalog to load.
-3. Search or filter the catalog by name, id, tags, or creation/update dates, then select the workflows to export.
+1. Open the Rewst Buddy sidebar and select **Rewst Exporter**, or run `Rewst Buddy: Open Rewst Exporter` from the Command Palette.
+2. Choose an organization and **Workflows**, **Templates**, or **Forms**; wait for that catalog to load.
+3. Search the catalog by name or ID; tags and creation/update date filters depend on the selected object type. Then select the items to export.
 4. Choose **Separate files** or **Signed bundle**, select the destination, and click **Start export**.
 
-The exporter shows progress and reports any failed exports or generated output files. It keeps its catalog and selections across view reloads. Each signed bundle file can contain up to **25 workflows**; larger selections are split into multiple bundle files, and existing files are never overwritten. For the command-palette picker, run `Rewst Buddy: Export Workflows`; it follows the same batching, destination, and no-overwrite rules as the sidebar.
+The exporter shows progress and reports any failed exports or generated output files. It keeps its catalog and selections across view reloads. Each signed bundle file can contain up to **25 items of the selected type**; larger selections are split into multiple bundle files, and existing files are never overwritten. Workflow-only: run `Rewst Buddy: Export Workflows` for a command-palette picker that follows the same batching, destination, and no-overwrite rules as the sidebar.

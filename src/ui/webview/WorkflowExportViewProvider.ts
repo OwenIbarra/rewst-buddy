@@ -5,8 +5,8 @@ import vscode from 'vscode';
 import { editorDataClient } from '../../backend/editorDataClient';
 import {
 	MAX_WORKFLOW_EXPORT_BATCH_SIZE,
+	exportBatchToAvailablePath,
 	pathExists,
-	resolveExportOutputPath,
 	runCatalogExports,
 	type ExportCatalogItem,
 	type ExporterObjectType as EngineExporterObjectType,
@@ -354,34 +354,42 @@ export class WorkflowExportViewProvider implements vscode.WebviewViewProvider, v
 				...(objectType === 'workflow' ? { workflowCount: objects.length } : {}),
 				mode,
 			});
+			const objectsById = new Map(objects.map(object => [object.id, object]));
 			const outcome = await runCatalogExports(
 				objects,
 				objectType,
 				mode,
 				async (objectIds, batchIndex, batchCount) => {
-					const objectIdSet = new Set(objectIds);
-					const outputPath = await resolveExportOutputPath(
-						destination,
-						this.defaultDirectory!,
-						objectType,
-						mode,
-						objects.filter(object => objectIdSet.has(object.id)),
-						batchIndex,
-						batchCount,
-						mode === 'separate' &&
-							(message.useObjectNames === true ||
-								(objectType === 'workflow' && message.useWorkflowNames === true)),
+					return exportBatchToAvailablePath(
+						{
+							destination,
+							defaultDirectory: this.defaultDirectory!,
+							objectType,
+							mode,
+							objects: objectIds.flatMap(id => {
+								const object = objectsById.get(id);
+								return object ? [object] : [];
+							}),
+							batchIndex,
+							batchCount,
+							useObjectNames:
+								mode === 'separate' &&
+								(message.useObjectNames === true ||
+									(objectType === 'workflow' && message.useWorkflowNames === true)),
+						},
+						async outputPath => {
+							const input = { sessionId: org.sessionId, orgId: org.id, outputPath };
+							return objectType === 'workflow'
+								? editorDataClient.exportWorkflows(
+										{ ...input, workflowIds: objectIds },
+										{ signal: controller.signal },
+									)
+								: editorDataClient.exportObjects(
+										{ ...input, objectType, objectIds },
+										{ signal: controller.signal },
+									);
+						},
 					);
-					const input = { sessionId: org.sessionId, orgId: org.id, outputPath };
-					return objectType === 'workflow'
-						? editorDataClient.exportWorkflows(
-								{ ...input, workflowIds: objectIds },
-								{ signal: controller.signal },
-							)
-						: editorDataClient.exportObjects(
-								{ ...input, objectType, objectIds },
-								{ signal: controller.signal },
-							);
 				},
 				controller.signal,
 				(messageText, increment = 0) => {

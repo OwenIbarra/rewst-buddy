@@ -593,14 +593,14 @@ suite('Unit: ExportWorkflows helpers', () => {
 		const outcomePromise = runWorkflowExports(
 			[workflow('wf-1')],
 			'bundle',
-			async ids => {
+			async () => {
 				controller.abort();
 				throw new Error('aborted by caller');
 			},
 			controller.signal,
 		);
 
-		await assert.deepStrictEqual(await outcomePromise, { results: [], failures: [], cancelled: true });
+		assert.deepStrictEqual(await outcomePromise, { results: [], failures: [], cancelled: true });
 	});
 
 	test('bundle mode batches every selected workflow without rejecting large selections', async () => {
