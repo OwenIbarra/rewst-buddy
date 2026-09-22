@@ -148,6 +148,7 @@ export class WorkflowExportViewProvider implements vscode.WebviewViewProvider, v
 				...WORKFLOW_EXPORT_BOOTSTRAP_PAYLOAD,
 				organizations: this.organizations(),
 				defaultDirectory: this.defaultDirectory,
+				catalogOrgId: this.catalogOrgId ?? null,
 			});
 		} catch (error) {
 			await this.post({

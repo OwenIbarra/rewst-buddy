@@ -1,10 +1,14 @@
 import { stat } from 'node:fs/promises';
-import { extname, join } from 'node:path';
+import { basename, dirname, extname, join, resolve as resolvePath } from 'node:path';
 import type { WorkflowExportResult } from '../../../packages/mcp-server/src/capabilities/workflowExportCapability';
 
 /** Rewst's export operation accepts at most this many workflow ids per call. */
 export const MAX_WORKFLOW_EXPORT_BATCH_SIZE = 25;
 export const MAX_EXPORT_FILENAME_SUFFIX = 1000;
+/** Maximum UTF-8 bytes for a portable filesystem path segment. */
+export const MAX_EXPORT_FILENAME_BYTES = 255;
+/** Compatibility alias retained for sidebar-era workflow exporter callers. */
+export const MAX_WORKFLOW_EXPORT_FILENAME_BYTES = MAX_EXPORT_FILENAME_BYTES;
 
 export type ExporterObjectType = 'workflow' | 'template' | 'form';
 
@@ -167,6 +171,26 @@ export async function runWorkflowExports(
 
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 
+function truncateByUtf8Bytes(value: string, maxBytes: number): string {
+	if (maxBytes <= 0) return '';
+	if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+	let result = '';
+	let usedBytes = 0;
+	for (const character of value) {
+		const bytes = Buffer.byteLength(character, 'utf8');
+		if (usedBytes + bytes > maxBytes) break;
+		result += character;
+		usedBytes += bytes;
+	}
+	return result;
+}
+
+function fitFilenamePart(value: string, maxBytes: number, fallback: string): string {
+	const fitted = truncateByUtf8Bytes(value, maxBytes).replace(/[. ]+$/g, '');
+	if (fitted) return fitted;
+	return truncateByUtf8Bytes(fallback, maxBytes).replace(/[. ]+$/g, '') || 'x';
+}
+
 /** Produces one portable path segment while retaining readable workflow names. */
 export function sanitizeWorkflowFilenamePart(value: string, maxLength = 150): string {
 	return sanitizeExportFilenamePart(value, 'workflow', maxLength);
@@ -186,7 +210,12 @@ export function sanitizeExportFilenamePart(value: string, fallback: string, maxL
 		.replace(/^[. ]+|[. ]+$/g, '');
 	if (!safe || safe === '.' || safe === '..') safe = fallback;
 	if (WINDOWS_RESERVED_NAME.test(safe)) safe = `_${safe}`;
-	return safe.slice(0, maxLength).replace(/[. ]+$/g, '') || fallback;
+	return (
+		[...safe]
+			.slice(0, maxLength)
+			.join('')
+			.replace(/[. ]+$/g, '') || fallback
+	);
 }
 
 /** Names separate exports by id or, when opted in, by readable name plus a collision-safe workflow id. */
@@ -202,9 +231,29 @@ export function separateExportFilename(
 	objectType: ExporterObjectType,
 	useObjectNames: boolean,
 ): string {
-	const id = sanitizeExportFilenamePart(object.id, objectType, 80);
-	if (!useObjectNames) return `rewst-${objectType}-${id}.json`;
-	return `${sanitizeExportFilenamePart(object.name, objectType)}--${id}.json`;
+	const extension = '.json';
+	const prefix = `rewst-${objectType}-`;
+	const separator = '--';
+	const sanitizedId = sanitizeExportFilenamePart(object.id, objectType, 80);
+	if (!useObjectNames) {
+		const id = fitFilenamePart(
+			sanitizedId,
+			MAX_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${prefix}${extension}`, 'utf8'),
+			objectType,
+		);
+		return `${prefix}${id}${extension}`;
+	}
+	const id = fitFilenamePart(
+		sanitizedId,
+		MAX_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${objectType}${separator}${extension}`, 'utf8'),
+		objectType,
+	);
+	const name = fitFilenamePart(
+		sanitizeExportFilenamePart(object.name, objectType),
+		MAX_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${separator}${id}${extension}`, 'utf8'),
+		objectType,
+	);
+	return `${name}${separator}${id}${extension}`;
 }
 
 export function workflowExportOutputPath(
@@ -313,11 +362,102 @@ export async function resolveExportOutputPath(
 	);
 	if (!outputPath || destination.kind === 'file' || !(await exists(outputPath))) return outputPath;
 
+	const directory = dirname(outputPath);
 	const extension = extname(outputPath);
-	const stem = outputPath.slice(0, -extension.length);
+	const filename = basename(outputPath);
+	const stem = filename.slice(0, filename.length - extension.length);
 	for (let suffix = 2; suffix <= MAX_EXPORT_FILENAME_SUFFIX; suffix++) {
-		const candidate = `${stem}-${suffix}${extension}`;
+		const suffixText = `-${suffix}`;
+		const fittedStem = fitFilenamePart(
+			stem,
+			MAX_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${suffixText}${extension}`, 'utf8'),
+			objectType,
+		);
+		const candidate = join(directory, `${fittedStem}${suffixText}${extension}`);
 		if (!(await exists(candidate))) return candidate;
 	}
 	throw new Error(`No available export filename for ${outputPath} after suffix ${MAX_EXPORT_FILENAME_SUFFIX}.`);
+}
+
+export interface ExportPathRequest {
+	destination: WorkflowExportDestination;
+	defaultDirectory: string;
+	objectType: ExporterObjectType;
+	mode: ExportMode;
+	objects: readonly Pick<ExportCatalogItem, 'id' | 'name'>[];
+	batchIndex: number;
+	batchCount: number;
+	useObjectNames?: boolean;
+}
+
+const directoryExportQueues = new Map<string, Promise<void>>();
+
+function serializeDirectoryExport<T>(directory: string, operation: () => Promise<T>): Promise<T> {
+	const key = resolvePath(directory);
+	const previous = directoryExportQueues.get(key) ?? Promise.resolve();
+	const result = previous.then(operation, operation);
+	const settled = result.then(
+		() => undefined,
+		() => undefined,
+	);
+	directoryExportQueues.set(key, settled);
+	void settled.then(() => {
+		if (directoryExportQueues.get(key) === settled) directoryExportQueues.delete(key);
+	});
+	return result;
+}
+
+/** Serializes path selection and publication for every exporter sharing a directory. */
+export async function exportBatchToAvailablePath<T>(
+	request: ExportPathRequest,
+	exporter: (outputPath: string | undefined) => Promise<T>,
+	exists: PathExists = pathExists,
+): Promise<T> {
+	const run = async (): Promise<T> => {
+		const outputPath = await resolveExportOutputPath(
+			request.destination,
+			request.defaultDirectory,
+			request.objectType,
+			request.mode,
+			request.objects,
+			request.batchIndex,
+			request.batchCount,
+			request.useObjectNames,
+			exists,
+		);
+		return exporter(outputPath);
+	};
+	if (request.destination.kind === 'file') return run();
+	return serializeDirectoryExport(request.destination.outputPath ?? request.defaultDirectory, run);
+}
+
+export interface WorkflowExportPathRequest {
+	destination: WorkflowExportDestination;
+	defaultDirectory: string;
+	mode: WorkflowExportMode;
+	workflows: readonly Pick<ExportWorkflowChoice, 'id' | 'name'>[];
+	batchIndex: number;
+	batchCount: number;
+	useWorkflowNames?: boolean;
+}
+
+export function exportWorkflowBatchToAvailablePath<T>(
+	request: WorkflowExportPathRequest,
+	exporter: (outputPath: string | undefined) => Promise<T>,
+	exists: PathExists = pathExists,
+): Promise<T> {
+	return exportBatchToAvailablePath(
+		{
+			destination: request.destination,
+			defaultDirectory: request.defaultDirectory,
+			objectType: 'workflow',
+			mode: request.mode,
+			objects: request.workflows,
+			batchIndex: request.batchIndex,
+			batchCount: request.batchCount,
+			useObjectNames: request.useWorkflowNames,
+		},
+		exporter,
+		exists,
+	);
 }

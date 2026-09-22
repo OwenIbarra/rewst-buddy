@@ -125,6 +125,10 @@ suite('Unit: package manifest', () => {
 		assert.ok(ids.includes('rewst-buddy.prefix.ExportWorkflows'));
 		assert.ok(ids.includes('rewst-buddy.prefix.OpenWorkflowExporter'));
 		assert.strictEqual(
+			manifest.contributes.commands.find(entry => entry.command === 'rewst-buddy.prefix.ExportWorkflows')?.title,
+			'Rewst Buddy: Export Workflows',
+		);
+		assert.strictEqual(
 			manifest.contributes.commands.find(entry => entry.command === 'rewst-buddy.prefix.OpenWorkflowExporter')
 				?.title,
 			'Rewst Buddy: Open Rewst Exporter',

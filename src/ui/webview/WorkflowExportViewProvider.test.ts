@@ -171,6 +171,34 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		);
 	});
 
+	test('skips organizations unless at least one active session has a usable id', () => {
+		const { session: unusable } = createMockSession({
+			profile: {
+				org: { id: 'org-1', name: 'Org One' },
+				allManagedOrgs: [{ id: 'org-1', name: 'Org One' }],
+			},
+		});
+		const { session: usable } = createMockSession({
+			profile: {
+				org: { id: 'org-1', name: 'Org One' },
+				allManagedOrgs: [{ id: 'org-1', name: 'Org One' }],
+			},
+		});
+		unusable.profile.user.id = null;
+		usable.profile.user.id = 'user-valid';
+
+		assert.deepStrictEqual(workflowExportOrganizations([unusable]), []);
+		assert.deepStrictEqual(
+			workflowExportOrganizations([usable]).map(org => ({ id: org.id, name: org.name })),
+			[{ id: 'org-1', name: 'Org One' }],
+		);
+		assert.strictEqual(workflowExportOrganizations([usable])[0]?.sessionId, 'user-valid');
+		assert.deepStrictEqual(
+			workflowExportOrganizations([unusable, usable]).map(org => ({ id: org.id, name: org.name })),
+			[{ id: 'org-1', name: 'Org One' }],
+		);
+	});
+
 	test('renders a script-enabled persistent Rewst Exporter without embedding credentials', () => {
 		const provider = new WorkflowExportViewProvider(vscode.Uri.file('/extension'));
 		const fake = fakeView();
@@ -261,6 +289,16 @@ suite('Unit: WorkflowExportViewProvider', () => {
 			messagesOfType(fake, 'bootstrap').at(-1)?.maxWorkflowsPerExport,
 			WORKFLOW_EXPORT_BOOTSTRAP_PAYLOAD.maxWorkflowsPerExport,
 		);
+		assert.strictEqual(messagesOfType(fake, 'bootstrap').at(-1)?.catalogOrgId, null);
+		provider.dispose();
+	});
+
+	test('bootstraps the organization whose catalog is currently loaded', async () => {
+		const { provider, fake } = await loadProviderCatalog(workflowRows(1));
+
+		await fake.state.listener?.({ type: 'ready' });
+
+		assert.strictEqual(messagesOfType(fake, 'bootstrap').at(-1)?.catalogOrgId, 'org-1');
 		provider.dispose();
 	});
 

@@ -18,6 +18,7 @@ import {
 	WORKFLOW_CATALOG_CACHE_KEY,
 	ExportWorkflows,
 	chooseWorkflowCatalog,
+	exportWorkflowBatchToAvailablePath,
 	pickDestination,
 	persistWorkflowCatalog,
 	readCachedWorkflowCatalog,
@@ -357,6 +358,13 @@ suite('Unit: ExportWorkflows helpers', () => {
 		);
 	});
 
+	test('destination input rejects an existing bundle file path', async () => {
+		assert.strictEqual(
+			await validateWorkflowExportPath(process.execPath, 'bundle'),
+			'Choose a new file name; workflow exports never overwrite files.',
+		);
+	});
+
 	test('file destination rejects an existing save-dialog path and accepts a new name', async () => {
 		const existingPath = join(process.cwd(), 'package.json');
 		const newPath = join(tmpdir(), `rewst-workflows-export-${Date.now()}.json`);
@@ -469,6 +477,38 @@ suite('Unit: ExportWorkflows helpers', () => {
 			),
 			'/exports/Daily - User- Sync--wf-123.json',
 		);
+	});
+
+	test('exports twice to the same folder with distinct unused output files', async () => {
+		const existing = new Set<string>();
+		const outputPaths: string[] = [];
+		const request = {
+			destination: { kind: 'directory' as const, outputPath: '/exports' },
+			defaultDirectory: '/default',
+			mode: 'bundle' as const,
+			workflows: [workflow('wf-1')],
+			batchIndex: 0,
+			batchCount: 1,
+		};
+		const exportOnce = () =>
+			exportWorkflowBatchToAvailablePath(
+				request,
+				async outputPath => {
+					assert.ok(outputPath);
+					existing.add(outputPath);
+					outputPaths.push(outputPath);
+					return result(['wf-1'], outputPath);
+				},
+				async path => existing.has(path),
+			);
+
+		await exportOnce();
+		await exportOnce();
+
+		assert.deepStrictEqual(outputPaths, [
+			'/exports/rewst-workflows-batch-001-of-001.json',
+			'/exports/rewst-workflows-batch-001-of-001-2.json',
+		]);
 	});
 
 	test('bundle mode sends all selected ids in one backend operation', async () => {

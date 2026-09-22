@@ -12,7 +12,7 @@ import GenericCommand from '../GenericCommand';
 import {
 	MAX_WORKFLOW_EXPORT_BATCH_SIZE,
 	pathExists,
-	resolveWorkflowExportOutputPath,
+	exportWorkflowBatchToAvailablePath,
 	runWorkflowExports,
 	type ExportWorkflowChoice,
 	type WorkflowExportDestination,
@@ -22,6 +22,9 @@ import {
 
 export {
 	MAX_WORKFLOW_EXPORT_BATCH_SIZE,
+	MAX_WORKFLOW_EXPORT_FILENAME_BYTES,
+	exportWorkflowBatchToAvailablePath,
+	resolveWorkflowExportOutputPath,
 	runWorkflowExports,
 	sanitizeWorkflowFilenamePart,
 	separateWorkflowExportFilename,
@@ -271,11 +274,22 @@ export async function validateWorkflowExportPath(
 	const path = value.trim();
 	if (!path) return 'Enter an export path.';
 	if (!isAbsolute(path)) return 'Enter an absolute export path.';
-	if (mode === 'bundle' && workflowCount <= MAX_WORKFLOW_EXPORT_BATCH_SIZE) return undefined;
 	try {
 		if ((await stat(path)).isDirectory()) return undefined;
-	} catch {
-		// Keep filesystem details out of the input validation message.
+		if (mode === 'bundle' && workflowCount <= MAX_WORKFLOW_EXPORT_BATCH_SIZE) {
+			return 'Choose a new file name; workflow exports never overwrite files.';
+		}
+	} catch (error) {
+		if (
+			mode === 'bundle' &&
+			workflowCount <= MAX_WORKFLOW_EXPORT_BATCH_SIZE &&
+			error &&
+			typeof error === 'object' &&
+			'code' in error &&
+			error.code === 'ENOENT'
+		) {
+			return undefined;
+		}
 	}
 	return mode === 'bundle'
 		? 'Choose an existing export folder for bundled batch files.'
@@ -465,22 +479,20 @@ export class ExportWorkflows extends GenericCommand {
 						mode,
 						async (workflowIds, batchIndex, batchCount) => {
 							const batchIds = new Set(workflowIds);
-							const outputPath = await resolveWorkflowExportOutputPath(
-								destination,
-								defaultDirectory,
-								mode,
-								workflows.filter(workflow => batchIds.has(workflow.id)),
-								batchIndex,
-								batchCount,
-							);
-							return editorDataClient.exportWorkflows(
+							return exportWorkflowBatchToAvailablePath(
 								{
-									sessionId,
-									orgId: pickedOrg.org.id,
-									workflowIds,
-									outputPath,
+									destination,
+									defaultDirectory,
+									mode,
+									workflows: workflows.filter(workflow => batchIds.has(workflow.id)),
+									batchIndex,
+									batchCount,
 								},
-								{ signal: controller.signal },
+								outputPath =>
+									editorDataClient.exportWorkflows(
+										{ sessionId, orgId: pickedOrg.org.id, workflowIds, outputPath },
+										{ signal: controller.signal },
+									),
 							);
 						},
 						controller.signal,

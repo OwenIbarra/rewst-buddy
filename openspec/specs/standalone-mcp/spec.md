@@ -241,7 +241,10 @@ subfolder, created when missing; when `outputPath` is omitted the server SHALL
 save under `rewst-buddy.mcp.exportDefaultDir`, falling back to
 `<home>/Downloads/Rewst Exports` when empty, creating the directory when
 missing; local writes SHALL be atomic and never replace an existing file. Large
-bundles SHALL remain pageable through `buddy_result_read`.
+bundles SHALL remain pageable through `buddy_result_read`. The editor command
+and sidebar SHALL follow the same no-overwrite rule. Concurrent directory
+exports SHALL receive distinct deterministic filenames, adding a numeric suffix
+when needed. Explicit file destinations SHALL never replace an existing file.
 
 #### Scenario: Export then save a workflow bundle
 
@@ -256,6 +259,13 @@ bundles SHALL remain pageable through `buddy_result_read`.
 - **WHEN** a client requests their export
 - **THEN** the server validates requested ids and rejects the request before opening the export subscription
 - **AND** no local export directory is created or bundle is written
+
+#### Scenario: Overlapping editor exports to one directory
+
+- **GIVEN** the command and sidebar would generate the same output filename in one directory
+- **WHEN** their exports overlap
+- **THEN** both outputs are preserved under distinct deterministic filenames
+- **AND** the later export uses the first available numeric suffix
 
 ### Requirement: Authenticated subscription transport boundaries
 

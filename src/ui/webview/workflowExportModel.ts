@@ -125,19 +125,23 @@ function timestamp(value: string | null | undefined): number | undefined {
 }
 
 function dateFloor(value: string | undefined): number | undefined {
-	return value ? Date.parse(`${value}T00:00:00.000Z`) : undefined;
+	if (!value) return undefined;
+	const parsed = Date.parse(`${value}T00:00:00.000Z`);
+	return Number.isNaN(parsed) ? undefined : parsed;
 }
 
 function dateCeiling(value: string | undefined): number | undefined {
-	return value ? Date.parse(`${value}T23:59:59.999Z`) : undefined;
+	if (!value) return undefined;
+	const parsed = Date.parse(`${value}T23:59:59.999Z`);
+	return Number.isNaN(parsed) ? undefined : parsed;
 }
 
 function withinDateRange(value: string | null | undefined, from?: string, to?: string): boolean {
-	if (!from && !to) return true;
-	const actual = timestamp(value);
-	if (actual === undefined) return false;
 	const minimum = dateFloor(from);
 	const maximum = dateCeiling(to);
+	if (minimum === undefined && maximum === undefined) return true;
+	const actual = timestamp(value);
+	if (actual === undefined) return false;
 	return (minimum === undefined || actual >= minimum) && (maximum === undefined || actual <= maximum);
 }
 

@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { buildASTSchema, parse, validate } from 'graphql';
 vi.mock('../src/crates/unpackClient', () => ({ runUnpackCrate: vi.fn() }));
+vi.mock('../src/export/exportStorage', async importOriginal => {
+	const actual = await importOriginal<typeof import('../src/export/exportStorage')>();
+	return { ...actual, ensureDefaultExportDir: vi.fn(async () => '/abs/default-exports') };
+});
 import {
 	editorDataOperations,
 	clearEditorDataCachesForTesting,
@@ -9,6 +13,7 @@ import {
 } from '../src/editorData';
 import { runUnpackCrate } from '../src/crates/unpackClient';
 import { SessionManager } from '../src/sessions/index';
+import { _setWorkflowExportDependenciesForTesting } from '../src/capabilities/workflowExportCapability';
 
 function installSession(
 	rawGraphql: (
@@ -26,6 +31,7 @@ function installSession(
 			region: { graphqlUrl: 'https://api.rewst.io/graphql' },
 		},
 		ensureValid: vi.fn(async () => true),
+		getCookies: vi.fn(async () => 'appSession=fixture-token'),
 		rawGraphql,
 	} as never);
 }
@@ -34,6 +40,7 @@ describe('editor data operations', () => {
 	beforeEach(() => {
 		clearEditorDataCachesForTesting();
 		setEditorExportCapabilityRunnerForTesting();
+		_setWorkflowExportDependenciesForTesting();
 		SessionManager.sessionMap.clear();
 	});
 
@@ -321,6 +328,160 @@ describe('editor data operations', () => {
 			expect.stringMatching(/createdAt[\s\S]*updatedAt[\s\S]*tags \{ id name \}/),
 			{ orgId: 'org-1', limit: 500, offset: 0 },
 			{ signal },
+		);
+	});
+
+	it('returns a structured catalog and delegates exports to buddy_export_workflows', async () => {
+		const rawGraphql = vi.fn(async (query: string, variables?: Record<string, unknown>) => {
+			if (query.includes('RewstBuddyPreviewWorkflows')) {
+				return {
+					data: {
+						workflows: [
+							{
+								id: 'wf-1',
+								name: 'Workflow One',
+								orgId: 'org-1',
+								createdAt: '2026-01-01T00:00:00.000Z',
+								updatedAt: '2026-02-01T00:00:00.000Z',
+								tags: [{ id: 'tag-1', name: 'Production' }],
+							},
+						],
+					},
+				};
+			}
+			if (query.includes('RewstBuddyWorkflowOwner')) {
+				return { data: { workflow: { id: variables?.id, name: 'Workflow One', orgId: 'org-1' } } };
+			}
+			return { data: {} };
+		});
+		installSession(rawGraphql);
+		const transport = vi.fn(async () => ({
+			recommendedFilename: 'workflow-one.json',
+			bundle: {
+				version: 2,
+				exportedAt: '2026-09-18T00:00:00.000Z',
+				signing: { signature: 'fixture' },
+				objects: [{ type: 'workflow', id: 'wf-1' }],
+			},
+		}));
+		const storage = {
+			save: vi.fn(async () => ({ outputPath: '/abs/exports/workflow-one.json', bytes: 123 })),
+		};
+		_setWorkflowExportDependenciesForTesting({ transport, storage });
+		const operationContext = { signal: new AbortController().signal, emit: async () => {} };
+
+		await expect(
+			editorDataOperations['workflows.export.catalog']({ sessionId: 'user-1', orgId: 'org-1' }, operationContext),
+		).resolves.toEqual([
+			{
+				id: 'wf-1',
+				name: 'Workflow One',
+				orgId: 'org-1',
+				createdAt: '2026-01-01T00:00:00.000Z',
+				updatedAt: '2026-02-01T00:00:00.000Z',
+				tags: [{ id: 'tag-1', name: 'Production' }],
+			},
+		]);
+
+		const result = await editorDataOperations['workflows.export.run'](
+			{
+				sessionId: 'user-1',
+				orgId: 'org-1',
+				workflowIds: ['wf-1'],
+				outputPath: '/abs/exports',
+			},
+			operationContext,
+		);
+
+		expect(result).toMatchObject({
+			status: 'saved',
+			orgId: 'org-1',
+			workflowIds: ['wf-1'],
+			outputPath: '/abs/exports/workflow-one.json',
+			signingPresent: true,
+		});
+		expect(transport).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ workflowIds: ['wf-1'], signal: operationContext.signal }),
+		);
+		expect(rawGraphql).toHaveBeenCalledWith(
+			expect.stringContaining('RewstBuddyPreviewWorkflows'),
+			{ orgId: 'org-1', limit: 500, offset: 0 },
+			{ signal: operationContext.signal },
+		);
+		expect(rawGraphql.mock.calls[0]?.[0]).toContain('tags { id name }');
+		expect(storage.save).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ outputPath: '/abs/exports', overwrite: false, signal: operationContext.signal }),
+		);
+	});
+
+	it('continues workflow pagination after a full page containing a null row', async () => {
+		const firstPage = Array.from({ length: 500 }, (_, index) =>
+			index === 250
+				? null
+				: {
+						id: `wf-${index}`,
+						name: `Workflow ${index}`,
+						orgId: 'org-1',
+					},
+		);
+		const rawGraphql = vi.fn(async (_query: string, variables?: Record<string, unknown>) => ({
+			data: {
+				workflows:
+					variables?.offset === 0
+						? firstPage
+						: variables?.offset === 500
+							? [{ id: 'wf-second-page', name: 'Second Page', orgId: 'org-1' }]
+							: [],
+			},
+		}));
+		installSession(rawGraphql);
+
+		const rows = await editorDataOperations['workflows.export.catalog'](
+			{ sessionId: 'user-1', orgId: 'org-1' },
+			{ signal: new AbortController().signal, emit: async () => {} },
+		);
+
+		expect(rows).toHaveLength(500);
+		expect(rows).toContainEqual({ id: 'wf-second-page', name: 'Second Page', orgId: 'org-1' });
+		expect(rawGraphql.mock.calls.map(call => call[1]?.offset)).toEqual([0, 500]);
+	});
+
+	it('supplies the default destination and does not allow inline bundle output', async () => {
+		const rawGraphql = vi.fn(async (query: string, variables?: Record<string, unknown>) =>
+			query.includes('RewstBuddyWorkflowOwner')
+				? { data: { workflow: { id: variables?.id, name: 'Workflow One', orgId: 'org-1' } } }
+				: { data: {} },
+		);
+		installSession(rawGraphql);
+		const transport = vi.fn(async () => ({
+			recommendedFilename: 'workflow-one.json',
+			bundle: {
+				version: 2,
+				exportedAt: '2026-09-18T00:00:00.000Z',
+				signing: { signature: 'fixture' },
+				objects: [{ type: 'workflow', id: 'wf-1' }],
+			},
+		}));
+		const storage = {
+			save: vi.fn(async () => ({ outputPath: '/abs/default-exports/workflow-one.json', bytes: 123 })),
+		};
+		_setWorkflowExportDependenciesForTesting({ transport, storage });
+		const operationContext = { signal: new AbortController().signal, emit: async () => {} };
+
+		const result = await editorDataOperations['workflows.export.run'](
+			{
+				sessionId: 'user-1',
+				orgId: 'org-1',
+				workflowIds: ['wf-1'],
+				includeBundle: true,
+			},
+			operationContext,
+		);
+
+		expect(result).toMatchObject({ outputPath: '/abs/default-exports/workflow-one.json' });
+		expect(result).not.toHaveProperty('bundle');
+		expect(storage.save).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ outputPath: '/abs/default-exports', signal: operationContext.signal }),
 		);
 	});
 

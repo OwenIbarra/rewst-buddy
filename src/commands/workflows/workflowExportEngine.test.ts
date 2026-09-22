@@ -1,11 +1,13 @@
 import type { WorkflowExportResult } from '../../../packages/mcp-server/src/capabilities/workflowExportCapability';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import * as assert from 'assert';
 import * as Mocha from 'mocha';
 import {
 	MAX_EXPORT_FILENAME_SUFFIX,
 	MAX_WORKFLOW_EXPORT_BATCH_SIZE,
+	MAX_WORKFLOW_EXPORT_FILENAME_BYTES,
 	exportOutputPath,
+	exportWorkflowBatchToAvailablePath,
 	resolveExportOutputPath,
 	runCatalogExports,
 	runWorkflowExports,
@@ -229,6 +231,20 @@ suite('Unit: workflow export engine', () => {
 		assert.notStrictEqual(first, second);
 	});
 
+	test('constrains complete emoji-heavy filenames by UTF-8 bytes at the filesystem boundary', () => {
+		const exactBoundary = separateWorkflowExportFilename(workflow('id', `${'😀'.repeat(60)}abcdef`), true);
+		assert.strictEqual(Buffer.byteLength(exactBoundary, 'utf8'), MAX_WORKFLOW_EXPORT_FILENAME_BYTES);
+		assert.ok(exactBoundary.endsWith('--id.json'));
+
+		const emojiHeavy = separateWorkflowExportFilename(workflow('😀'.repeat(80), '😀'.repeat(150)), true);
+		assert.ok(Buffer.byteLength(emojiHeavy, 'utf8') <= MAX_WORKFLOW_EXPORT_FILENAME_BYTES);
+		assert.doesNotMatch(emojiHeavy, /�/);
+
+		const fallback = separateWorkflowExportFilename(workflow('😀'.repeat(80), '...'), true);
+		assert.ok(fallback.startsWith('workflow--'));
+		assert.strictEqual(Buffer.byteLength(fallback, 'utf8'), MAX_WORKFLOW_EXPORT_FILENAME_BYTES);
+	});
+
 	test('derives collision-safe template and form filenames and bundle destinations', async () => {
 		for (const objectType of ['template', 'form'] as const) {
 			const object = workflow(`${objectType}-1`, 'Daily/Sync');
@@ -338,6 +354,82 @@ suite('Unit: workflow export engine', () => {
 			),
 			join('/exports', 'Daily Sync--wf-1-2.json'),
 		);
+
+		const boundaryWorkflow = workflow('id', `${'😀'.repeat(60)}abcdef`);
+		const boundaryPath = workflowExportOutputPath(
+			{ kind: 'directory', outputPath: '/exports' },
+			'/default',
+			'separate',
+			[boundaryWorkflow],
+			0,
+			1,
+			true,
+		)!;
+		existing.add(boundaryPath);
+		const suffixedBoundaryPath = await resolveWorkflowExportOutputPath(
+			{ kind: 'directory', outputPath: '/exports' },
+			'/default',
+			'separate',
+			[boundaryWorkflow],
+			0,
+			1,
+			true,
+			exists,
+		);
+		assert.ok(suffixedBoundaryPath);
+		assert.ok(Buffer.byteLength(basename(suffixedBoundaryPath), 'utf8') <= MAX_WORKFLOW_EXPORT_FILENAME_BYTES);
+	});
+
+	test('keeps overlapping command and sidebar directory exports distinct', async () => {
+		const existing = new Set<string>();
+		const paths: string[] = [];
+		let releaseFirst!: () => void;
+		let markFirstStarted!: () => void;
+		const firstStarted = new Promise<void>(resolve => (markFirstStarted = resolve));
+		const holdFirst = new Promise<void>(resolve => (releaseFirst = resolve));
+		const request = {
+			destination: { kind: 'directory' as const, outputPath: '/exports' },
+			defaultDirectory: '/default',
+			mode: 'bundle' as const,
+			workflows: [workflow('wf-1')],
+			batchIndex: 0,
+			batchCount: 1,
+		};
+		const exists = async (path: string): Promise<boolean> => existing.has(path);
+
+		const commandExport = exportWorkflowBatchToAvailablePath(
+			request,
+			async outputPath => {
+				assert.ok(outputPath);
+				paths.push(outputPath);
+				markFirstStarted();
+				await holdFirst;
+				existing.add(outputPath);
+				return outputPath;
+			},
+			exists,
+		);
+		await firstStarted;
+		const sidebarExport = exportWorkflowBatchToAvailablePath(
+			request,
+			async outputPath => {
+				assert.ok(outputPath);
+				paths.push(outputPath);
+				existing.add(outputPath);
+				return outputPath;
+			},
+			exists,
+		);
+		releaseFirst();
+
+		assert.deepStrictEqual(await Promise.all([commandExport, sidebarExport]), [
+			join('/exports', 'rewst-workflows-batch-001-of-001.json'),
+			join('/exports', 'rewst-workflows-batch-001-of-001-2.json'),
+		]);
+		assert.deepStrictEqual(paths, [
+			join('/exports', 'rewst-workflows-batch-001-of-001.json'),
+			join('/exports', 'rewst-workflows-batch-001-of-001-2.json'),
+		]);
 	});
 
 	test('stops searching after the maximum export filename suffix', async () => {
