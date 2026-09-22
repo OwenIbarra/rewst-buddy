@@ -1,6 +1,8 @@
-import { initTestEnvironment, stub } from '@test';
+import { createMockSession, Fixtures, initTestEnvironment, installMockSessions, stub } from '@test';
 import { context } from '@global';
+import { SessionManager } from '@sessions';
 import { log } from '@utils';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as assert from 'assert';
@@ -11,8 +13,10 @@ import type { WorkflowExportResult } from '../../../packages/mcp-server/src/capa
 import { WORKFLOW_EXPORT_BOOTSTRAP_PAYLOAD } from '../../../packages/mcp-server/src/capabilities/workflowExportCapability';
 import {
 	MAX_WORKFLOW_CATALOG_CACHE_ENTRIES,
+	MAX_WORKFLOW_CATALOG_CACHE_ROWS,
 	MAX_WORKFLOW_EXPORT_BATCH_SIZE,
 	WORKFLOW_CATALOG_CACHE_KEY,
+	ExportWorkflows,
 	chooseWorkflowCatalog,
 	exportWorkflowBatchToAvailablePath,
 	pickDestination,
@@ -23,6 +27,7 @@ import {
 	separateWorkflowExportFilename,
 	workflowExportOutputPath,
 	workflowExportDestinationChoices,
+	workflowExportTargetExists,
 	workflowQuickPickItems,
 	writeCachedWorkflowCatalog,
 	validateWorkflowExportPath,
@@ -112,6 +117,20 @@ suite('Unit: ExportWorkflows helpers', () => {
 		);
 	});
 
+	test('public target check treats only ENOENT as available and accepts an injected stat', async () => {
+		assert.strictEqual(await workflowExportTargetExists('/exports/present.json', async () => ({})), true);
+		const missing = Object.assign(new Error('missing'), { code: 'ENOENT' });
+		assert.strictEqual(
+			await workflowExportTargetExists('/exports/missing.json', async () => Promise.reject(missing)),
+			false,
+		);
+		const denied = Object.assign(new Error('denied'), { code: 'EACCES' });
+		await assert.rejects(
+			workflowExportTargetExists('/exports/denied.json', async () => Promise.reject(denied)),
+			/denied/,
+		);
+	});
+
 	test('workflow export bootstrap payload exposes the authoritative backend batch limit', () => {
 		assert.strictEqual(WORKFLOW_EXPORT_BOOTSTRAP_PAYLOAD.maxWorkflowsPerExport, MAX_WORKFLOW_EXPORT_BATCH_SIZE);
 	});
@@ -161,6 +180,41 @@ suite('Unit: ExportWorkflows helpers', () => {
 		assert.strictEqual(Object.keys(stored?.entries ?? {}).length, MAX_WORKFLOW_CATALOG_CACHE_ENTRIES);
 		assert.strictEqual(readCachedWorkflowCatalog('session-1', 'org-0'), undefined);
 		assert.ok(readCachedWorkflowCatalog('session-1', `org-${MAX_WORKFLOW_CATALOG_CACHE_ENTRIES}`));
+	});
+
+	test('workflow catalog cache bounds total rows without truncating catalogs', async () => {
+		const rows = (count: number) => Array.from({ length: count }, (_, index) => ({ id: `wf-${index}` }));
+		await writeCachedWorkflowCatalog({
+			sessionId: 'session-1',
+			orgId: 'old',
+			fetchedAt: '2026-01-01T00:00:00.000Z',
+			workflows: rows(2_000),
+		});
+		await writeCachedWorkflowCatalog({
+			sessionId: 'session-1',
+			orgId: 'new',
+			fetchedAt: '2026-01-02T00:00:00.000Z',
+			workflows: rows(3_000),
+		});
+		await writeCachedWorkflowCatalog({
+			sessionId: 'session-1',
+			orgId: 'newest',
+			fetchedAt: '2026-01-03T00:00:00.000Z',
+			workflows: rows(1),
+		});
+
+		assert.strictEqual(readCachedWorkflowCatalog('session-1', 'old'), undefined);
+		assert.strictEqual(readCachedWorkflowCatalog('session-1', 'new')?.workflows.length, 3_000);
+		assert.strictEqual(readCachedWorkflowCatalog('session-1', 'newest')?.workflows.length, 1);
+
+		await writeCachedWorkflowCatalog({
+			sessionId: 'session-1',
+			orgId: 'oversized',
+			fetchedAt: '2026-01-04T00:00:00.000Z',
+			workflows: rows(MAX_WORKFLOW_CATALOG_CACHE_ROWS + 1),
+		});
+		assert.strictEqual(readCachedWorkflowCatalog('session-1', 'oversized'), undefined);
+		assert.strictEqual(readCachedWorkflowCatalog('session-1', 'new')?.workflows.length, 3_000);
 	});
 
 	test('catalog chooser returns a cached entry and does not fetch', async () => {
@@ -340,6 +394,70 @@ suite('Unit: ExportWorkflows helpers', () => {
 		}
 	});
 
+	test('a second legacy command export to the same directory uses a new filename', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'rewst-buddy-workflow-export-'));
+		const org = Fixtures.orgModel({ id: 'org-1', name: 'Org One' });
+		const { session } = createMockSession({ profile: { org, allManagedOrgs: [org] } });
+		installMockSessions([session]);
+		const outputPaths: string[] = [];
+		const restores = [
+			stub(vscode.window, 'showQuickPick', (async (
+				items: readonly ({
+					value?: string;
+					arguments?: boolean[];
+					workflow?: ExportWorkflowChoice;
+				} & vscode.QuickPickItem)[],
+				options?: { canPickMany?: boolean },
+			) => {
+				if (options?.canPickMany) return items.filter(item => item.workflow?.id === 'wf-1');
+				return items.find(item => item.arguments?.[0] || item.value === 'cached' || item.value === 'default');
+			}) as unknown as typeof vscode.window.showQuickPick),
+			stub(vscode.window, 'withProgress', (async (_options, task) => {
+				const cancellation = new vscode.CancellationTokenSource();
+				try {
+					return await task({ report: () => {} }, cancellation.token);
+				} finally {
+					cancellation.dispose();
+				}
+			}) as typeof vscode.window.withProgress),
+			stub(
+				vscode.window,
+				'showInformationMessage',
+				(async () => undefined) as typeof vscode.window.showInformationMessage,
+			),
+			stub(editorDataClient, 'listExportWorkflows', (async () => [
+				{ id: 'wf-1', name: 'One', orgId: org.id },
+			]) as typeof editorDataClient.listExportWorkflows),
+			stub(
+				editorDataClient,
+				'getWorkflowExportDefaultDirectory',
+				(async () => directory) as typeof editorDataClient.getWorkflowExportDefaultDirectory,
+			),
+			stub(editorDataClient, 'exportWorkflows', (async input => {
+				assert.deepStrictEqual(input.workflowIds, ['wf-1']);
+				assert.strictEqual(input.orgId, org.id);
+				assert.ok(input.outputPath);
+				await writeFile(input.outputPath, String(outputPaths.length + 1), { flag: 'wx' });
+				outputPaths.push(input.outputPath);
+				return result(input.workflowIds, input.outputPath);
+			}) as typeof editorDataClient.exportWorkflows),
+		];
+		try {
+			await new ExportWorkflows().execute();
+			await new ExportWorkflows().execute();
+			assert.deepStrictEqual(outputPaths, [
+				join(directory, 'rewst-workflows-batch-001-of-001.json'),
+				join(directory, 'rewst-workflows-batch-001-of-001-2.json'),
+			]);
+			assert.strictEqual(await readFile(outputPaths[0], 'utf8'), '1');
+			assert.strictEqual(await readFile(outputPaths[1], 'utf8'), '2');
+		} finally {
+			while (restores.length) restores.pop()!();
+			SessionManager._resetForTesting();
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	test('filename mode preserves readable workflow names while remaining portable and collision-safe', () => {
 		assert.strictEqual(sanitizeWorkflowFilenamePart('  Daily / User: Sync  '), 'Daily - User- Sync');
 		assert.strictEqual(sanitizeWorkflowFilenamePart('Daily\u0000Sync\u001f\u007f'), 'DailySync');
@@ -475,14 +593,14 @@ suite('Unit: ExportWorkflows helpers', () => {
 		const outcomePromise = runWorkflowExports(
 			[workflow('wf-1')],
 			'bundle',
-			async ids => {
+			async () => {
 				controller.abort();
 				throw new Error('aborted by caller');
 			},
 			controller.signal,
 		);
 
-		await assert.deepStrictEqual(await outcomePromise, { results: [], failures: [], cancelled: true });
+		assert.deepStrictEqual(await outcomePromise, { results: [], failures: [], cancelled: true });
 	});
 
 	test('bundle mode batches every selected workflow without rejecting large selections', async () => {

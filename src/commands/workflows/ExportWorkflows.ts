@@ -11,6 +11,7 @@ import type { WorkflowExportResult } from '../../../packages/mcp-server/src/capa
 import GenericCommand from '../GenericCommand';
 import {
 	MAX_WORKFLOW_EXPORT_BATCH_SIZE,
+	pathExists,
 	exportWorkflowBatchToAvailablePath,
 	runWorkflowExports,
 	type ExportWorkflowChoice,
@@ -23,11 +24,12 @@ export {
 	MAX_WORKFLOW_EXPORT_BATCH_SIZE,
 	MAX_WORKFLOW_EXPORT_FILENAME_BYTES,
 	exportWorkflowBatchToAvailablePath,
-	runWorkflowExports,
 	resolveWorkflowExportOutputPath,
+	runWorkflowExports,
 	sanitizeWorkflowFilenamePart,
 	separateWorkflowExportFilename,
 	workflowExportOutputPath,
+	pathExists as workflowExportTargetExists,
 } from './workflowExportEngine';
 export type {
 	ExportWorkflowChoice,
@@ -38,6 +40,7 @@ export type {
 } from './workflowExportEngine';
 export const WORKFLOW_CATALOG_CACHE_KEY = 'WorkflowExportCatalog.v1';
 export const MAX_WORKFLOW_CATALOG_CACHE_ENTRIES = 20;
+export const MAX_WORKFLOW_CATALOG_CACHE_ROWS = 5_000;
 
 export interface WorkflowQuickPickItem extends vscode.QuickPickItem {
 	workflow: ExportWorkflowChoice;
@@ -92,11 +95,18 @@ export async function writeCachedWorkflowCatalog(entry: WorkflowCatalogCacheEntr
 		),
 	);
 	entries[cacheEntryId(entry.sessionId, entry.orgId)] = entry;
-	const retainedEntries = Object.fromEntries(
-		Object.entries(entries)
-			.sort(([, left], [, right]) => Date.parse(right.fetchedAt) - Date.parse(left.fetchedAt))
-			.slice(0, MAX_WORKFLOW_CATALOG_CACHE_ENTRIES),
-	);
+	const retainedEntries: Record<string, WorkflowCatalogCacheEntry> = {};
+	let retainedRows = 0;
+	let retainedCount = 0;
+	for (const [key, value] of Object.entries(entries).sort(
+		([, left], [, right]) => Date.parse(right.fetchedAt) - Date.parse(left.fetchedAt),
+	)) {
+		if (retainedCount >= MAX_WORKFLOW_CATALOG_CACHE_ENTRIES) break;
+		if (value.workflows.length > MAX_WORKFLOW_CATALOG_CACHE_ROWS - retainedRows) continue;
+		retainedEntries[key] = value;
+		retainedRows += value.workflows.length;
+		retainedCount++;
+	}
 	await context.globalState.update(WORKFLOW_CATALOG_CACHE_KEY, {
 		entries: retainedEntries,
 	} satisfies WorkflowCatalogCache);
@@ -265,13 +275,11 @@ export async function validateWorkflowExportPath(
 	if (!path) return 'Enter an export path.';
 	if (!isAbsolute(path)) return 'Enter an absolute export path.';
 	try {
-		const target = await stat(path);
-		if (target.isDirectory()) return undefined;
+		if ((await stat(path)).isDirectory()) return undefined;
 		if (mode === 'bundle' && workflowCount <= MAX_WORKFLOW_EXPORT_BATCH_SIZE) {
 			return 'Choose a new file name; workflow exports never overwrite files.';
 		}
 	} catch (error) {
-		// Keep filesystem details out of the input validation message.
 		if (
 			mode === 'bundle' &&
 			workflowCount <= MAX_WORKFLOW_EXPORT_BATCH_SIZE &&
@@ -326,16 +334,6 @@ export function workflowExportDestinationChoices(
 	];
 }
 
-export async function workflowExportTargetExists(path: string): Promise<boolean> {
-	try {
-		await stat(path);
-		return true;
-	} catch (error) {
-		if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return false;
-		throw error;
-	}
-}
-
 export async function pickDestination(
 	mode: WorkflowExportMode,
 	defaultDirectory: string,
@@ -365,7 +363,7 @@ export async function pickDestination(
 				title: 'Choose Workflow Export File',
 			});
 			if (!selected) return undefined;
-			if (await workflowExportTargetExists(selected.fsPath)) {
+			if (await pathExists(selected.fsPath)) {
 				await vscode.window.showWarningMessage(
 					'Choose a new file name; workflow exports never overwrite files.',
 				);
@@ -479,7 +477,7 @@ export class ExportWorkflows extends GenericCommand {
 					return await runWorkflowExports(
 						workflows,
 						mode,
-						(workflowIds, batchIndex, batchCount) => {
+						async (workflowIds, batchIndex, batchCount) => {
 							const batchIds = new Set(workflowIds);
 							return exportWorkflowBatchToAvailablePath(
 								{
@@ -492,12 +490,7 @@ export class ExportWorkflows extends GenericCommand {
 								},
 								outputPath =>
 									editorDataClient.exportWorkflows(
-										{
-											sessionId,
-											orgId: pickedOrg.org.id,
-											workflowIds,
-											outputPath,
-										},
+										{ sessionId, orgId: pickedOrg.org.id, workflowIds, outputPath },
 										{ signal: controller.signal },
 									),
 							);

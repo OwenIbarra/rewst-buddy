@@ -1,6 +1,7 @@
 import { expect, vi } from 'vitest';
 import { teardown as afterEach, setup as beforeEach, suite as describe, test as it } from '../test/tdd';
 import type SessionProfile from './SessionProfile';
+import { Session } from './Session';
 import { SessionManager } from './SessionManager';
 import { SessionTreeDataProvider } from '../ui/webview/SessionTreeDataProvider';
 
@@ -73,6 +74,20 @@ describe('editor session snapshots', () => {
 		mocks.executeCommand.mockClear();
 	});
 	afterEach(() => SessionManager.dispose());
+
+	it('forwards SDK cancellation signals to the authenticated editor operation', async () => {
+		mocks.invoke.mockResolvedValue({ templates: [] });
+		const session = new Session(undefined, profile(), 'user-1');
+		const controller = new AbortController();
+
+		await session.sdk?.listTemplates({ orgId: 'org-1' }, undefined, controller.signal);
+
+		expect(mocks.invoke).toHaveBeenCalledWith(
+			'session.sdk.listTemplates',
+			{ sessionId: 'user-1', args: { orgId: 'org-1' } },
+			{ signal: controller.signal },
+		);
+	});
 
 	it('publishes restored profiles to the tree when an existing owner sends no new session event', async () => {
 		const active = profile();

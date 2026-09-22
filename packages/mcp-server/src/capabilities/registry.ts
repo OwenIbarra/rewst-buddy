@@ -14,6 +14,7 @@ import { resultReadCapability } from './resultReadCapability';
 import { READ_CAPABILITIES } from './rewstReadCapabilities';
 import { TAG_MUTATE_CAPABILITIES } from './tagMutateCapabilities';
 import { TEMPLATE_CLONE_CAPABILITIES } from './templateCloneCapabilities';
+import { formExportCapability, templateExportCapability } from './templateFormExportCapabilities';
 import { TEMPLATE_MUTATE_CAPABILITIES } from './templateMutateCapabilities';
 import { TRIGGER_ACTIVATION_CAPABILITIES } from './triggerActivationCapabilities';
 import { TRIGGER_FORM_CAPABILITIES } from './triggerFormCapabilities';
@@ -57,6 +58,8 @@ export const CAPABILITY_REGISTRY: Capability[] = [
 	...CRATE_CAPABILITIES,
 	crateUnpackCapability,
 	workflowExportCapability,
+	templateExportCapability,
+	formExportCapability,
 	workflowImpactCapability,
 	workflowLintCapability,
 	saveWorkflowInputProfileCapability,

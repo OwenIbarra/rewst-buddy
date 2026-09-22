@@ -135,13 +135,20 @@ function assertSdkArgsOrgScope(session: Session, args: unknown): void {
 	}
 }
 
-async function sdkOperation(method: EditorSessionSdkMethod, input: Record<string, unknown>): Promise<unknown> {
+async function sdkOperation(
+	method: EditorSessionSdkMethod,
+	input: Record<string, unknown>,
+	context: EditorSessionOperationContext,
+): Promise<unknown> {
 	const session = await requireSession(input);
 	const args = input.args;
 	assertSdkArgsOrgScope(session, args);
-	const fn = session.sdk?.[method] as ((args?: unknown) => Promise<unknown>) | undefined;
+	const fn = session.sdk?.[method] as
+		| ((args?: unknown, requestHeaders?: unknown, signal?: AbortSignal) => Promise<unknown>)
+		| undefined;
 	if (!fn) throw new Error(`SDK operation "${method}" is unavailable for this session.`);
-	return method === 'User' || args === undefined ? fn() : fn(args);
+	// Generated SDK methods keep the signal in the third slot even when their query has no variables.
+	return fn(args, undefined, context.signal);
 }
 
 async function create(input: Record<string, unknown>): Promise<SessionSnapshot> {
@@ -256,7 +263,7 @@ const operations: Record<string, Operation> = {
 };
 
 for (const method of SDK_METHODS) {
-	operations[`session.sdk.${method}`] = input => sdkOperation(method, input);
+	operations[`session.sdk.${method}`] = (input, context) => sdkOperation(method, input, context);
 }
 
 export const editorSessionOperations: Record<string, Operation> = operations;

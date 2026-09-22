@@ -11,6 +11,8 @@ export interface SaveExportRequest {
 	contents: string;
 	overwrite: boolean;
 	signal?: AbortSignal;
+	/** Human-readable operation prefix used only for cancellation errors. */
+	operationName?: string;
 }
 
 export interface SavedExport {
@@ -120,8 +122,8 @@ export function sanitizeExportFilename(value: string): string {
 	return safe.length <= 240 ? safe : `${safe.slice(0, 235)}.json`;
 }
 
-function throwIfCancelled(signal?: AbortSignal): void {
-	if (signal?.aborted) throw new Error('Workflow export was cancelled.');
+function throwIfCancelled(signal?: AbortSignal, operationName = 'Workflow export'): void {
+	if (signal?.aborted) throw new Error(`${operationName} was cancelled.`);
 }
 
 /** Default folder for saves that point at the Downloads folder itself. */
@@ -275,9 +277,12 @@ export function buildTemporaryExportName(baseName: string, randomSuffix: string)
 /** Local filesystem storage with same-directory temporary files and rename. */
 export class LocalExportStorage implements ExportStorage {
 	async save(request: SaveExportRequest): Promise<SavedExport> {
-		throwIfCancelled(request.signal);
+		const operationName = request.operationName ?? 'Workflow export';
+		throwIfCancelled(request.signal, operationName);
 		if (request.overwrite) {
-			throw new Error('overwrite=true is not authorized for the read-only workflow export capability.');
+			throw new Error(
+				`overwrite=true is not authorized for the read-only ${operationName.toLowerCase()} capability.`,
+			);
 		}
 		const requestedTarget = await resolveTarget(request.outputPath, request.recommendedFilename);
 		// Pointing at the Downloads folder itself saves into a Rewst Exports
@@ -286,7 +291,7 @@ export class LocalExportStorage implements ExportStorage {
 		const approvedTarget = await approvedCanonicalTarget(await redirectDownloadsRoot(requestedTarget));
 		const target = approvedTarget.target;
 		const parent = dirname(target);
-		throwIfCancelled(request.signal);
+		throwIfCancelled(request.signal, operationName);
 
 		const parentHandle = await openParentDirectory(parent);
 		let accessParent = await validateParent(parent, approvedTarget.approvedRoots, parentHandle);
@@ -309,24 +314,24 @@ export class LocalExportStorage implements ExportStorage {
 		let published = false;
 		let complete = false;
 		try {
-			throwIfCancelled(request.signal);
+			throwIfCancelled(request.signal, operationName);
 			temporaryHandle = await open(
 				temporaryAccessPath,
 				constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
 				0o600,
 			);
 			temporaryIdentity = await assertPathMatchesHandle(temporaryAccessPath, temporaryHandle);
-			throwIfCancelled(request.signal);
+			throwIfCancelled(request.signal, operationName);
 			await temporaryHandle.writeFile(request.contents, { encoding: 'utf8', signal: request.signal });
-			throwIfCancelled(request.signal);
+			throwIfCancelled(request.signal, operationName);
 			await temporaryHandle.sync();
-			throwIfCancelled(request.signal);
+			throwIfCancelled(request.signal, operationName);
 			accessParent = await validateParent(parent, approvedTarget.approvedRoots, parentHandle);
 			await assertPathMatchesHandle(join(accessParent, temporaryName), temporaryHandle);
 			// A same-directory hard link publishes the complete 0600 temporary file
 			// atomically and fails with EEXIST instead of replacing a racing writer.
 			try {
-				throwIfCancelled(request.signal);
+				throwIfCancelled(request.signal, operationName);
 				await link(join(accessParent, temporaryName), join(accessParent, basename(target)));
 				published = true;
 			} catch (error) {
@@ -340,7 +345,7 @@ export class LocalExportStorage implements ExportStorage {
 			if (!temporaryIdentity || !publishedStats.isFile() || !sameFile(publishedStats, temporaryIdentity)) {
 				throw new Error('Export output file changed during atomic publication.');
 			}
-			throwIfCancelled(request.signal);
+			throwIfCancelled(request.signal, operationName);
 			complete = true;
 		} finally {
 			await temporaryHandle?.close();

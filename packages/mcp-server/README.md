@@ -264,10 +264,12 @@ VS Code actions use host approval regardless of this legacy setting. Scope
 changes still validate organization and workflow membership before applying.
 The MCP server does not expose arbitrary shell-command execution.
 
-### Local workflow export paths
+### Local workflow, template, and form export paths
 
-`buddy_export_workflows` is read-only in Rewst, but its optional `outputPath`
-writes the returned signed bundle to the local machine. Local output is limited
+`buddy_export_workflows`, `buddy_export_templates`, and `buddy_export_forms` are
+read-only in Rewst, but their optional `outputPath` writes the returned signed
+bundle to the local machine. Each tool verifies every requested object's
+organization before opening the export subscription. Local output is limited
 to the user's Downloads directory, active editor workspace folders, the Git
 checkout containing the server's current directory, and additional absolute
 directories explicitly listed in `rewst-buddy.mcp.exportRoots`. Parent
@@ -280,7 +282,7 @@ after publication, and uses descriptor-relative paths on Linux. Node does not
 expose portable `openat`/`linkat` APIs; on macOS and Windows the final hard-link
 operation remains path-based with identity checks immediately around it. Avoid
 export roots whose parent directories are writable by untrusted local users.
-The read-only export tool never replaces an existing file: `overwrite` must be
+The read-only export tools never replace an existing file: `overwrite` must be
 `false`, and callers must choose a new path when a target already exists. An
 explicit file path is used exactly as supplied, including its extension. The
 server appends `.json` only to a sanitized server-recommended filename when
@@ -288,9 +290,11 @@ server appends `.json` only to a sanitized server-recommended filename when
 folder itself saves inside a `Rewst Exports` subfolder, created when missing, so
 bundles do not scatter across the top level. The Rewst operation itself is
 read-only: the returned bundle keeps Rewst's signing intact and is never
-rewritten. Large bundles stay pageable with `buddy_result_read`, and in-flight
-exports can be cancelled. Only local-disk storage exists today; the storage
-interface is extensible to future remote destinations.
+rewritten. Rewst's recommended filename is used when available; type-specific
+workflow, template, or form filenames are used as fallbacks. Large bundles stay
+pageable with `buddy_result_read`, and in-flight exports can be cancelled. Only
+local-disk storage exists today; the storage interface is extensible to future
+remote destinations.
 
 Standalone `--config` files may set the same additional roots with the nested
 form below:

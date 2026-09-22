@@ -3,11 +3,16 @@ import { basename, join } from 'node:path';
 import * as assert from 'assert';
 import * as Mocha from 'mocha';
 import {
+	MAX_EXPORT_FILENAME_SUFFIX,
 	MAX_WORKFLOW_EXPORT_BATCH_SIZE,
 	MAX_WORKFLOW_EXPORT_FILENAME_BYTES,
+	exportOutputPath,
 	exportWorkflowBatchToAvailablePath,
+	resolveExportOutputPath,
+	runCatalogExports,
 	runWorkflowExports,
 	resolveWorkflowExportOutputPath,
+	separateExportFilename,
 	sanitizeWorkflowFilenamePart,
 	separateWorkflowExportFilename,
 	workflowExportOutputPath,
@@ -68,6 +73,40 @@ suite('Unit: workflow export engine', () => {
 			);
 			assert.strictEqual(outcome.cancelled, false);
 			assert.deepStrictEqual(outcome.failures, []);
+		}
+	});
+
+	test('shares typed batching, progress, and failure semantics with template and form exports', async () => {
+		for (const objectType of ['template', 'form'] as const) {
+			const selected = Array.from({ length: 3 }, (_, index) => ({
+				...workflow(`${objectType}-${index + 1}`, `${objectType} ${index + 1}`),
+			}));
+			const calls: string[][] = [];
+			const progress: string[] = [];
+			const outcome = await runCatalogExports(
+				selected,
+				objectType,
+				'bundle',
+				async ids => {
+					calls.push(ids);
+					if (ids.includes(`${objectType}-3`)) throw new Error(`${objectType} batch failed`);
+					return { outputPath: `/exports/${objectType}.json` };
+				},
+				new AbortController().signal,
+				message => progress.push(message),
+				2,
+			);
+
+			assert.deepStrictEqual(calls, [[`${objectType}-1`, `${objectType}-2`], [`${objectType}-3`]]);
+			assert.match(progress[0], new RegExp(`Bundling batch 1/2 2 ${objectType}s`));
+			assert.match(progress[2], new RegExp(`Bundling batch 2/2 1 ${objectType}`));
+			assert.deepStrictEqual(
+				outcome.results.map(item => item.objectIds),
+				[[`${objectType}-1`, `${objectType}-2`]],
+			);
+			assert.deepStrictEqual(outcome.failures, [
+				{ objectIds: [`${objectType}-3`], message: `${objectType} batch failed` },
+			]);
 		}
 	});
 
@@ -204,6 +243,37 @@ suite('Unit: workflow export engine', () => {
 		const fallback = separateWorkflowExportFilename(workflow('😀'.repeat(80), '...'), true);
 		assert.ok(fallback.startsWith('workflow--'));
 		assert.strictEqual(Buffer.byteLength(fallback, 'utf8'), MAX_WORKFLOW_EXPORT_FILENAME_BYTES);
+	});
+
+	test('derives collision-safe template and form filenames and bundle destinations', async () => {
+		for (const objectType of ['template', 'form'] as const) {
+			const object = workflow(`${objectType}-1`, 'Daily/Sync');
+			assert.strictEqual(separateExportFilename(object, objectType, true), `Daily-Sync--${objectType}-1.json`);
+			const first = exportOutputPath(
+				{ kind: 'directory', outputPath: '/exports' },
+				'/default',
+				objectType,
+				'bundle',
+				[object],
+				0,
+				2,
+			);
+			assert.strictEqual(first, join('/exports', `rewst-${objectType}s-batch-001-of-002.json`));
+			assert.strictEqual(
+				await resolveExportOutputPath(
+					{ kind: 'directory', outputPath: '/exports' },
+					'/default',
+					objectType,
+					'bundle',
+					[object],
+					0,
+					2,
+					false,
+					async path => path === first,
+				),
+				join('/exports', `rewst-${objectType}s-batch-001-of-002-2.json`),
+			);
+		}
 	});
 
 	test('uses file destinations verbatim and derives directory output paths', () => {
@@ -360,6 +430,36 @@ suite('Unit: workflow export engine', () => {
 			join('/exports', 'rewst-workflows-batch-001-of-001.json'),
 			join('/exports', 'rewst-workflows-batch-001-of-001-2.json'),
 		]);
+	});
+
+	test('stops searching after the maximum export filename suffix', async () => {
+		const checked: string[] = [];
+		const base = join('/exports', 'rewst-workflows-batch-001-of-001.json');
+		const exists = async (candidate: string) => {
+			checked.push(candidate);
+			return true;
+		};
+		await assert.rejects(
+			resolveWorkflowExportOutputPath(
+				{ kind: 'directory', outputPath: '/exports' },
+				'/default',
+				'bundle',
+				[workflow('wf-1')],
+				0,
+				1,
+				false,
+				exists,
+			),
+			error =>
+				error instanceof Error &&
+				error.message.includes(base) &&
+				error.message.includes(String(MAX_EXPORT_FILENAME_SUFFIX)),
+		);
+		assert.strictEqual(checked.length, MAX_EXPORT_FILENAME_SUFFIX);
+		assert.strictEqual(
+			checked.at(-1),
+			join('/exports', `rewst-workflows-batch-001-of-001-${MAX_EXPORT_FILENAME_SUFFIX}.json`),
+		);
 	});
 
 	test('does not rewrite an explicitly chosen file destination', async () => {

@@ -5,6 +5,7 @@ import { SessionManager } from '../src/sessions/SessionManager';
 import Session from '../src/sessions/Session';
 import type SessionProfile from '../src/sessions/SessionProfile';
 import type { RegionConfig } from '../src/sessions/RegionConfig';
+import { getSdk } from '../src/sessions/graphql/sdk';
 
 const region: RegionConfig = {
 	name: 'Test',
@@ -156,6 +157,41 @@ describe('editor session operations', () => {
 			),
 		).rejects.toThrow('does not manage organization');
 		expect(method).not.toHaveBeenCalled();
+	});
+
+	it('forwards editor cancellation to SDK operations', async () => {
+		const listTemplates = vi.fn().mockResolvedValue({ templates: [] });
+		const session = new Session(
+			{ User: vi.fn().mockResolvedValue({ user: profile().user }), listTemplates } as never,
+			profile(),
+		);
+		SessionManager._setSessionsForTesting([session]);
+		const controller = new AbortController();
+
+		await editorSessionOperations['session.sdk.listTemplates'](
+			{ sessionId: 'user-1', args: { orgId: 'org-root' } },
+			{ signal: controller.signal, emit: async () => {} },
+		);
+
+		expect(listTemplates).toHaveBeenCalledWith({ orgId: 'org-root' }, undefined, controller.signal);
+	});
+
+	it('passes cancellation through the generated SDK for a query without variables', async () => {
+		const request = vi.fn().mockResolvedValue({ user: profile().user });
+		const session = new Session(getSdk({ request } as never), profile());
+		SessionManager._setSessionsForTesting([session]);
+		const controller = new AbortController();
+
+		await editorSessionOperations['session.sdk.User'](
+			{ sessionId: 'user-1' },
+			{ signal: controller.signal, emit: async () => {} },
+		);
+
+		expect(request).toHaveBeenCalled();
+		expect(request.mock.calls.at(-1)?.[0]).toMatchObject({
+			variables: undefined,
+			signal: controller.signal,
+		});
 	});
 
 	it('keeps SDK operation names finite and rejects raw cookie access', () => {

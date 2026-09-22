@@ -12,7 +12,8 @@ import {
 	type UnpackSuccess,
 } from './crates/crateUnpack';
 import { runUnpackCrate } from './crates/unpackClient';
-import { workflowExportCapability, type WorkflowExportResult } from './capabilities/workflowExportCapability';
+import { getCapability, runCapability, type Capability, type CapabilityContext } from './capabilities/index';
+import type { WorkflowExportResult } from './capabilities/workflowExportCapability';
 import { ensureDefaultExportDir } from './export/exportStorage';
 import type { RuntimeHost } from './host';
 import { SessionManager } from './sessions/index';
@@ -47,6 +48,18 @@ export interface PreviewWorkflowRow {
 	updatedAt?: string | null;
 	tags?: { id?: string | null; name?: string | null }[] | null;
 }
+
+export interface ExportCatalogRow {
+	id?: string | null;
+	name?: string | null;
+	orgId?: string | null;
+	createdAt?: string | null;
+	updatedAt?: string | null;
+	tags?: ({ id?: string | null; name?: string | null } | null)[] | null;
+}
+
+export type ExportFormRow = ExportCatalogRow;
+export type ExportTemplateRow = ExportCatalogRow;
 
 const WORKFLOWS_QUERY = `query RewstBuddyPreviewWorkflows($orgId: ID!, $limit: Int, $offset: Int) {
 	workflows(where: { orgId: $orgId }, limit: $limit, offset: $offset, order: [["name", "asc"]]) {
@@ -96,11 +109,31 @@ const CRATE_DETAIL_QUERY = `query RewstBuddyCrateDetail($crateId: ID, $orgId: ID
 	}
 }`;
 
+const EXPORT_TEMPLATES_QUERY = `query RewstBuddyExportTemplates($orgId: ID!, $limit: Int, $offset: Int) {
+	templates(where: { orgId: $orgId }, limit: $limit, offset: $offset, order: [["name", "asc"]]) {
+		id name orgId createdAt updatedAt tags { id name }
+	}
+}`;
+
+const EXPORT_FORMS_QUERY = `query RewstBuddyExportForms($orgId: ID!, $limit: Int, $offset: Int) {
+	forms(where: { orgId: $orgId }, limit: $limit, offset: $offset, order: [["name", "asc"]]) {
+		id name orgId createdAt updatedAt tags { id name }
+	}
+}`;
+
 const FILTERS_PATH = '/jinja/intellisense/filters';
 const WORKFLOW_PICK_LIMIT = 500;
 const WORKFLOW_PICK_MAX_PAGES = 100;
 const CRATE_LIST_LIMIT = 500;
+const EXPORT_CATALOG_LIST_LIMIT = 500;
+const EXPORT_CATALOG_MAX_PAGES = 100;
 const filterCache = new Map<string, JinjaFilterDoc[]>();
+type ExportCapabilityRunner = (
+	capability: Capability,
+	input: Record<string, unknown>,
+	context: CapabilityContext,
+) => Promise<string>;
+let exportCapabilityRunner: ExportCapabilityRunner = runCapability;
 
 function engineBaseFromRegion(graphqlUrl: string | undefined): string {
 	if (typeof graphqlUrl !== 'string') return 'https://engine.rewst.io';
@@ -195,9 +228,11 @@ async function execute(
 	session: Session,
 	query: string,
 	variables: Record<string, unknown>,
-	options?: { signal?: AbortSignal },
+	signal?: AbortSignal,
 ): Promise<unknown> {
-	const result = await session.rawGraphql(query, variables, options);
+	const result = signal
+		? await session.rawGraphql(query, variables, { signal })
+		: await session.rawGraphql(query, variables);
 	const error = firstErrorMessage(result);
 	if (error) throw new Error(error);
 	return result.data;
@@ -237,7 +272,7 @@ async function previewWorkflows(
 	const orgId = inputOrg(input);
 	const rows: PreviewWorkflowRow[] = [];
 	for (let page = 0; page < WORKFLOW_PICK_MAX_PAGES; page++) {
-		const pageRows =
+		const rawRows =
 			(
 				(await execute(
 					session,
@@ -247,37 +282,14 @@ async function previewWorkflows(
 						limit: WORKFLOW_PICK_LIMIT,
 						offset: page * WORKFLOW_PICK_LIMIT,
 					},
-					{ signal: context?.signal },
+					context?.signal,
 				)) as { workflows?: (PreviewWorkflowRow | null)[] } | undefined
 			)?.workflows ?? [];
-		const usable = pageRows.filter((row): row is PreviewWorkflowRow => !!row?.id);
+		const usable = rawRows.filter((row): row is PreviewWorkflowRow => !!row?.id);
 		rows.push(...usable);
-		if (pageRows.length < WORKFLOW_PICK_LIMIT) break;
+		if (rawRows.length < WORKFLOW_PICK_LIMIT) break;
 	}
 	return rows;
-}
-
-async function exportWorkflows(
-	input: Record<string, unknown>,
-	context: EditorOperationContext,
-): Promise<WorkflowExportResult> {
-	const session = await requireSession(input);
-	const orgId = inputOrg(input);
-	const outputPath = input.outputPath ?? (await ensureDefaultExportDir());
-	const serialized = await workflowExportCapability.run(
-		{ ...input, outputPath, includeBundle: false },
-		{
-			session,
-			orgId,
-			sessions: SessionManager.getActiveSessions(),
-			signal: context.signal,
-		},
-	);
-	const result: unknown = JSON.parse(serialized);
-	if (!isPlainObject(result) || result.status !== 'saved') {
-		throw new Error('Workflow export returned an unexpected result.');
-	}
-	return result as unknown as WorkflowExportResult;
 }
 
 async function previewExecutions(input: Record<string, unknown>): Promise<ExecutionRow[]> {
@@ -330,6 +342,127 @@ async function detailCrate(input: Record<string, unknown>): Promise<CrateDetail 
 	return parseCrateDetail(data) ?? null;
 }
 
+async function listExportCatalog(
+	input: Record<string, unknown>,
+	context: EditorOperationContext,
+	query: string,
+	responseField: 'templates' | 'forms',
+): Promise<ExportCatalogRow[]> {
+	const session = await requireSession(input);
+	const orgId = inputOrg(input);
+	const rows: ExportCatalogRow[] = [];
+	for (let page = 0; page < EXPORT_CATALOG_MAX_PAGES; page++) {
+		const data = (await execute(
+			session,
+			query,
+			{
+				orgId,
+				limit: EXPORT_CATALOG_LIST_LIMIT,
+				offset: page * EXPORT_CATALOG_LIST_LIMIT,
+			},
+			context.signal,
+		)) as Record<string, (ExportCatalogRow | null)[] | null | undefined> | undefined;
+		const rawRows = data?.[responseField] ?? [];
+		const pageRows = rawRows.filter((row): row is ExportCatalogRow => row !== null);
+		rows.push(...pageRows);
+		if (rawRows.length < EXPORT_CATALOG_LIST_LIMIT) break;
+	}
+	return rows;
+}
+
+const listExportTemplates = (input: Record<string, unknown>, context: EditorOperationContext) =>
+	listExportCatalog(input, context, EXPORT_TEMPLATES_QUERY, 'templates');
+const listExportForms = (input: Record<string, unknown>, context: EditorOperationContext) =>
+	listExportCatalog(input, context, EXPORT_FORMS_QUERY, 'forms');
+
+const EXPORT_CAPABILITY_NAMES = new Set(['buddy_export_workflows', 'buddy_export_templates', 'buddy_export_forms']);
+
+async function runEditorExport(input: Record<string, unknown>, context: EditorOperationContext): Promise<string> {
+	const session = await requireSession(input);
+	const name = inputString(input, 'name');
+	if (!EXPORT_CAPABILITY_NAMES.has(name)) throw new Error(`Unsupported editor export capability "${name}".`);
+	const capability = getCapability(name);
+	if (!capability) throw new Error(`Export capability "${name}" is not registered.`);
+	const args = input.arguments;
+	if (!isPlainObject(args)) throw new Error('Argument "arguments" must be an object.');
+	const orgId = inputOrg(input);
+	return exportCapabilityRunner(
+		capability,
+		{ ...args, orgId },
+		{ session, orgId, sessions: [session], signal: context.signal },
+	);
+}
+
+interface EditorObjectExportResult {
+	status: 'saved';
+	orgId: string;
+	objectType: 'template' | 'form';
+	objectIds: string[];
+	outputPath: string | null;
+	[key: string]: unknown;
+}
+
+async function exportObjects(
+	input: Record<string, unknown>,
+	context: EditorOperationContext,
+): Promise<EditorObjectExportResult> {
+	const objectType = inputString(input, 'objectType');
+	const config =
+		objectType === 'template'
+			? { capabilityName: 'buddy_export_templates', idsField: 'templateIds' }
+			: objectType === 'form'
+				? { capabilityName: 'buddy_export_forms', idsField: 'formIds' }
+				: undefined;
+	if (!config) throw new Error(`Unsupported editor export object type "${objectType}".`);
+	const serialized = await runEditorExport(
+		{
+			sessionId: input.sessionId,
+			orgId: input.orgId,
+			name: config.capabilityName,
+			arguments: {
+				[config.idsField]: input.objectIds,
+				...(input.outputPath === undefined ? {} : { outputPath: input.outputPath }),
+				includeBundle: false,
+			},
+		},
+		context,
+	);
+	const result: unknown = JSON.parse(serialized);
+	if (!isPlainObject(result) || result.status !== 'saved') {
+		throw new Error(`${objectType === 'template' ? 'Template' : 'Form'} export returned an unexpected result.`);
+	}
+	const objectIds = result[config.idsField];
+	if (!Array.isArray(objectIds) || !objectIds.every(id => typeof id === 'string')) {
+		throw new Error(`${objectType === 'template' ? 'Template' : 'Form'} export returned unexpected object ids.`);
+	}
+	return { ...(result as Record<string, unknown>), objectType, objectIds } as EditorObjectExportResult;
+}
+
+async function exportWorkflows(
+	input: Record<string, unknown>,
+	context: EditorOperationContext,
+): Promise<WorkflowExportResult> {
+	const outputPath = input.outputPath ?? (await ensureDefaultExportDir());
+	const serialized = await runEditorExport(
+		{
+			sessionId: input.sessionId,
+			orgId: input.orgId,
+			name: 'buddy_export_workflows',
+			arguments: {
+				workflowIds: input.workflowIds,
+				outputPath,
+				includeBundle: false,
+			},
+		},
+		context,
+	);
+	const result: unknown = JSON.parse(serialized);
+	if (!isPlainObject(result) || result.status !== 'saved') {
+		throw new Error('Workflow export returned an unexpected result.');
+	}
+	return result as unknown as WorkflowExportResult;
+}
+
 async function unpackCrate(input: Record<string, unknown>, context: EditorOperationContext): Promise<UnpackSuccess> {
 	const session = await requireSession(input);
 	const crateId = inputString(input, 'crateId');
@@ -373,10 +506,18 @@ export const editorDataOperations: Record<
 	'crates.list': input => listCrates(input),
 	'crates.detail': input => detailCrate(input),
 	'crates.unpack': unpackCrate,
+	'exports.templates.list': listExportTemplates,
+	'exports.forms.list': listExportForms,
+	'exports.objects.run': exportObjects,
+	'exports.run': runEditorExport,
 };
 
 export function clearEditorDataCachesForTesting(): void {
 	filterCache.clear();
+}
+
+export function setEditorExportCapabilityRunnerForTesting(runner?: ExportCapabilityRunner): void {
+	exportCapabilityRunner = runner ?? runCapability;
 }
 
 /** Keep host imports explicit in this module's public boundary for embedders. */

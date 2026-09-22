@@ -29,7 +29,7 @@ suite('Unit: OpenWorkflowExporter', () => {
 		);
 	}
 
-	test('opens the Rewst Buddy sidebar before focusing the workflow exporter', async () => {
+	test('opens the Rewst Buddy sidebar before focusing the Rewst Exporter', async () => {
 		await new OpenWorkflowExporter().execute();
 
 		assert.deepStrictEqual(commandCalls, [

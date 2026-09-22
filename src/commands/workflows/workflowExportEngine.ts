@@ -4,11 +4,15 @@ import type { WorkflowExportResult } from '../../../packages/mcp-server/src/capa
 
 /** Rewst's export operation accepts at most this many workflow ids per call. */
 export const MAX_WORKFLOW_EXPORT_BATCH_SIZE = 25;
-
+export const MAX_EXPORT_FILENAME_SUFFIX = 1000;
 /** Maximum UTF-8 bytes for a portable filesystem path segment. */
-export const MAX_WORKFLOW_EXPORT_FILENAME_BYTES = 255;
+export const MAX_EXPORT_FILENAME_BYTES = 255;
+/** Compatibility alias retained for sidebar-era workflow exporter callers. */
+export const MAX_WORKFLOW_EXPORT_FILENAME_BYTES = MAX_EXPORT_FILENAME_BYTES;
 
-export interface ExportWorkflowChoice {
+export type ExporterObjectType = 'workflow' | 'template' | 'form';
+
+export interface ExportCatalogItem {
 	id: string;
 	name: string;
 	orgId: string;
@@ -18,7 +22,29 @@ export interface ExportWorkflowChoice {
 	tags?: { id?: string | null; name?: string | null }[] | null;
 }
 
-export type WorkflowExportMode = 'bundle' | 'separate';
+/** Compatibility name retained for workflow command and provider callers. */
+export type ExportWorkflowChoice = ExportCatalogItem;
+
+export type ExportMode = 'bundle' | 'separate';
+/** Compatibility name retained for the workflow exporter interface. */
+export type WorkflowExportMode = ExportMode;
+
+export interface CatalogExportFailure {
+	item?: ExportCatalogItem;
+	objectIds?: string[];
+	message: string;
+}
+
+export interface CatalogExportResult<TResult> {
+	objectIds: string[];
+	result: TResult;
+}
+
+export interface CatalogExportFlowResult<TResult> {
+	results: CatalogExportResult<TResult>[];
+	failures: CatalogExportFailure[];
+	cancelled: boolean;
+}
 
 export interface WorkflowExportFailure {
 	workflow?: ExportWorkflowChoice;
@@ -38,7 +64,14 @@ export interface WorkflowExportDestination {
 }
 
 type Exporter = (workflowIds: string[], batchIndex: number, batchCount: number) => Promise<WorkflowExportResult>;
+type CatalogExporter<TResult> = (objectIds: string[], batchIndex: number, batchCount: number) => Promise<TResult>;
 type ProgressReporter = (message: string, increment?: number) => void;
+
+const OBJECT_LABELS: Record<ExporterObjectType, { singular: string; plural: string }> = {
+	workflow: { singular: 'workflow', plural: 'workflows' },
+	template: { singular: 'template', plural: 'templates' },
+	form: { singular: 'form', plural: 'forms' },
+};
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -50,6 +83,64 @@ function batches<T>(items: readonly T[], size: number): T[][] {
 	return result;
 }
 
+/**
+ * Shared execution loop for every catalog-backed exporter. The workflow
+ * wrapper below preserves its historical result and failure shapes.
+ */
+export async function runCatalogExports<TResult>(
+	objects: readonly ExportCatalogItem[],
+	objectType: ExporterObjectType,
+	mode: ExportMode,
+	exporter: CatalogExporter<TResult>,
+	signal: AbortSignal,
+	report: ProgressReporter = () => {},
+	batchSize = MAX_WORKFLOW_EXPORT_BATCH_SIZE,
+): Promise<CatalogExportFlowResult<TResult>> {
+	if (objects.length === 0) return { results: [], failures: [], cancelled: false };
+	const labels = OBJECT_LABELS[objectType];
+
+	if (mode === 'bundle') {
+		const objectBatches = batches(objects, batchSize);
+		const results: CatalogExportResult<TResult>[] = [];
+		const failures: CatalogExportFailure[] = [];
+		for (const [index, objectBatch] of objectBatches.entries()) {
+			if (signal.aborted) return { results, failures, cancelled: true };
+			const batchLabel = objectBatches.length === 1 ? '' : ` batch ${index + 1}/${objectBatches.length}`;
+			report(
+				`Bundling${batchLabel} ${objectBatch.length} ${objectBatch.length === 1 ? labels.singular : labels.plural}…`,
+			);
+			const objectIds = objectBatch.map(object => object.id);
+			try {
+				results.push({ objectIds, result: await exporter(objectIds, index, objectBatches.length) });
+			} catch (error) {
+				if (signal.aborted) return { results, failures, cancelled: true };
+				failures.push({ objectIds, message: errorMessage(error) });
+			}
+			report(
+				`${Math.min((index + 1) * batchSize, objects.length)} of ${objects.length} complete`,
+				(100 * objectBatch.length) / objects.length,
+			);
+		}
+		return { results, failures, cancelled: false };
+	}
+
+	const results: CatalogExportResult<TResult>[] = [];
+	const failures: CatalogExportFailure[] = [];
+	const increment = 100 / objects.length;
+	for (const [index, object] of objects.entries()) {
+		if (signal.aborted) return { results, failures, cancelled: true };
+		report(`Exporting ${object.name} (${index + 1}/${objects.length})…`);
+		try {
+			results.push({ objectIds: [object.id], result: await exporter([object.id], index, objects.length) });
+		} catch (error) {
+			if (signal.aborted) return { results, failures, cancelled: true };
+			failures.push({ item: object, message: errorMessage(error) });
+		}
+		report(`${index + 1} of ${objects.length} complete`, increment);
+	}
+	return { results, failures, cancelled: false };
+}
+
 /** Runs every selected export while keeping each backend request within Rewst's limit. */
 export async function runWorkflowExports(
 	workflows: readonly ExportWorkflowChoice[],
@@ -58,54 +149,24 @@ export async function runWorkflowExports(
 	signal: AbortSignal,
 	report: ProgressReporter = () => {},
 ): Promise<WorkflowExportFlowResult> {
-	if (workflows.length === 0) return { results: [], failures: [], cancelled: false };
-
-	if (mode === 'bundle') {
-		const workflowBatches = batches(workflows, MAX_WORKFLOW_EXPORT_BATCH_SIZE);
-		const results: WorkflowExportResult[] = [];
-		const failures: WorkflowExportFailure[] = [];
-		for (const [index, workflowBatch] of workflowBatches.entries()) {
-			if (signal.aborted) return { results, failures, cancelled: true };
-			const batchLabel = workflowBatches.length === 1 ? '' : ` batch ${index + 1}/${workflowBatches.length}`;
-			report(`Bundling${batchLabel} ${workflowBatch.length} workflow${workflowBatch.length === 1 ? '' : 's'}…`);
-			try {
-				results.push(
-					await exporter(
-						workflowBatch.map(workflow => workflow.id),
-						index,
-						workflowBatches.length,
-					),
-				);
-			} catch (error) {
-				if (signal.aborted) return { results, failures, cancelled: true };
-				failures.push({
-					workflowIds: workflowBatch.map(workflow => workflow.id),
-					message: errorMessage(error),
-				});
-			}
-			report(
-				`${Math.min((index + 1) * MAX_WORKFLOW_EXPORT_BATCH_SIZE, workflows.length)} of ${workflows.length} complete`,
-				(100 * workflowBatch.length) / workflows.length,
-			);
-		}
-		return { results, failures, cancelled: false };
-	}
-
-	const results: WorkflowExportResult[] = [];
-	const failures: WorkflowExportFailure[] = [];
-	const increment = 100 / workflows.length;
-	for (const [index, workflow] of workflows.entries()) {
-		if (signal.aborted) return { results, failures, cancelled: true };
-		report(`Exporting ${workflow.name} (${index + 1}/${workflows.length})…`);
-		try {
-			results.push(await exporter([workflow.id], index, workflows.length));
-		} catch (error) {
-			if (signal.aborted) return { results, failures, cancelled: true };
-			failures.push({ workflow, message: errorMessage(error) });
-		}
-		report(`${index + 1} of ${workflows.length} complete`, increment);
-	}
-	return { results, failures, cancelled: false };
+	const outcome = await runCatalogExports(
+		workflows,
+		'workflow',
+		mode,
+		exporter,
+		signal,
+		report,
+		MAX_WORKFLOW_EXPORT_BATCH_SIZE,
+	);
+	return {
+		results: outcome.results.map(result => result.result),
+		failures: outcome.failures.map(failure => ({
+			...(failure.item ? { workflow: failure.item } : {}),
+			...(failure.objectIds ? { workflowIds: failure.objectIds } : {}),
+			message: failure.message,
+		})),
+		cancelled: outcome.cancelled,
+	};
 }
 
 const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
@@ -116,22 +177,26 @@ function truncateByUtf8Bytes(value: string, maxBytes: number): string {
 	let result = '';
 	let usedBytes = 0;
 	for (const character of value) {
-		const characterBytes = Buffer.byteLength(character, 'utf8');
-		if (usedBytes + characterBytes > maxBytes) break;
+		const bytes = Buffer.byteLength(character, 'utf8');
+		if (usedBytes + bytes > maxBytes) break;
 		result += character;
-		usedBytes += characterBytes;
+		usedBytes += bytes;
 	}
 	return result;
 }
 
-function fitFilenamePart(value: string, maxBytes: number, fallback = 'workflow'): string {
+function fitFilenamePart(value: string, maxBytes: number, fallback: string): string {
 	const fitted = truncateByUtf8Bytes(value, maxBytes).replace(/[. ]+$/g, '');
 	if (fitted) return fitted;
-	return truncateByUtf8Bytes(fallback, maxBytes).replace(/[. ]+$/g, '') || 'w';
+	return truncateByUtf8Bytes(fallback, maxBytes).replace(/[. ]+$/g, '') || 'x';
 }
 
 /** Produces one portable path segment while retaining readable workflow names. */
 export function sanitizeWorkflowFilenamePart(value: string, maxLength = 150): string {
+	return sanitizeExportFilenamePart(value, 'workflow', maxLength);
+}
+
+export function sanitizeExportFilenamePart(value: string, fallback: string, maxLength = 150): string {
 	let safe = [...value.normalize('NFKC')]
 		.filter(character => {
 			const codePoint = character.codePointAt(0) ?? 0;
@@ -143,13 +208,13 @@ export function sanitizeWorkflowFilenamePart(value: string, maxLength = 150): st
 		.replace(/-+/g, '-')
 		.trim()
 		.replace(/^[. ]+|[. ]+$/g, '');
-	if (!safe || safe === '.' || safe === '..') safe = 'workflow';
+	if (!safe || safe === '.' || safe === '..') safe = fallback;
 	if (WINDOWS_RESERVED_NAME.test(safe)) safe = `_${safe}`;
 	return (
 		[...safe]
 			.slice(0, maxLength)
 			.join('')
-			.replace(/[. ]+$/g, '') || 'workflow'
+			.replace(/[. ]+$/g, '') || fallback
 	);
 }
 
@@ -158,27 +223,35 @@ export function separateWorkflowExportFilename(
 	workflow: Pick<ExportWorkflowChoice, 'id' | 'name'>,
 	useWorkflowNames: boolean,
 ): string {
+	return separateExportFilename(workflow, 'workflow', useWorkflowNames);
+}
+
+export function separateExportFilename(
+	object: Pick<ExportCatalogItem, 'id' | 'name'>,
+	objectType: ExporterObjectType,
+	useObjectNames: boolean,
+): string {
 	const extension = '.json';
-	const sanitizedId = sanitizeWorkflowFilenamePart(workflow.id, 80);
-	if (!useWorkflowNames) {
-		const prefix = 'rewst-workflow-';
+	const prefix = `rewst-${objectType}-`;
+	const separator = '--';
+	const sanitizedId = sanitizeExportFilenamePart(object.id, objectType, 80);
+	if (!useObjectNames) {
 		const id = fitFilenamePart(
 			sanitizedId,
-			MAX_WORKFLOW_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${prefix}${extension}`, 'utf8'),
+			MAX_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${prefix}${extension}`, 'utf8'),
+			objectType,
 		);
 		return `${prefix}${id}${extension}`;
 	}
-
-	const separator = '--';
-	const fallbackName = 'workflow';
 	const id = fitFilenamePart(
 		sanitizedId,
-		MAX_WORKFLOW_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${fallbackName}${separator}${extension}`, 'utf8'),
+		MAX_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${objectType}${separator}${extension}`, 'utf8'),
+		objectType,
 	);
 	const name = fitFilenamePart(
-		sanitizeWorkflowFilenamePart(workflow.name),
-		MAX_WORKFLOW_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${separator}${id}${extension}`, 'utf8'),
-		fallbackName,
+		sanitizeExportFilenamePart(object.name, objectType),
+		MAX_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${separator}${id}${extension}`, 'utf8'),
+		objectType,
 	);
 	return `${name}${separator}${id}${extension}`;
 }
@@ -192,23 +265,45 @@ export function workflowExportOutputPath(
 	batchCount: number,
 	useWorkflowNames = false,
 ): string | undefined {
+	return exportOutputPath(
+		destination,
+		defaultDirectory,
+		'workflow',
+		mode,
+		workflows,
+		batchIndex,
+		batchCount,
+		useWorkflowNames,
+	);
+}
+
+export function exportOutputPath(
+	destination: WorkflowExportDestination,
+	defaultDirectory: string,
+	objectType: ExporterObjectType,
+	mode: ExportMode,
+	objects: readonly Pick<ExportCatalogItem, 'id' | 'name'>[],
+	batchIndex: number,
+	batchCount: number,
+	useObjectNames = false,
+): string | undefined {
 	if (destination.kind === 'file') return destination.outputPath;
 	const directory = destination.outputPath ?? defaultDirectory;
 	if (mode === 'bundle') {
 		return join(
 			directory,
-			`rewst-workflows-batch-${String(batchIndex + 1).padStart(3, '0')}-of-${String(batchCount).padStart(3, '0')}.json`,
+			`rewst-${OBJECT_LABELS[objectType].plural}-batch-${String(batchIndex + 1).padStart(3, '0')}-of-${String(batchCount).padStart(3, '0')}.json`,
 		);
 	}
-	const workflow = workflows[0] ?? { id: 'workflow', name: 'workflow' };
-	return join(directory, separateWorkflowExportFilename(workflow, useWorkflowNames));
+	const object = objects[0] ?? { id: objectType, name: objectType };
+	return join(directory, separateExportFilename(object, objectType, useObjectNames));
 }
 
 type PathExists = (path: string) => Promise<boolean>;
 
-async function pathExists(path: string): Promise<boolean> {
+export async function pathExists(path: string, statPath: (path: string) => Promise<unknown> = stat): Promise<boolean> {
 	try {
-		await stat(path);
+		await statPath(path);
 		return true;
 	} catch (error) {
 		if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return false;
@@ -231,14 +326,39 @@ export async function resolveWorkflowExportOutputPath(
 	useWorkflowNames = false,
 	exists: PathExists = pathExists,
 ): Promise<string | undefined> {
-	const outputPath = workflowExportOutputPath(
+	return resolveExportOutputPath(
 		destination,
 		defaultDirectory,
+		'workflow',
 		mode,
 		workflows,
 		batchIndex,
 		batchCount,
 		useWorkflowNames,
+		exists,
+	);
+}
+
+export async function resolveExportOutputPath(
+	destination: WorkflowExportDestination,
+	defaultDirectory: string,
+	objectType: ExporterObjectType,
+	mode: ExportMode,
+	objects: readonly Pick<ExportCatalogItem, 'id' | 'name'>[],
+	batchIndex: number,
+	batchCount: number,
+	useObjectNames = false,
+	exists: PathExists = pathExists,
+): Promise<string | undefined> {
+	const outputPath = exportOutputPath(
+		destination,
+		defaultDirectory,
+		objectType,
+		mode,
+		objects,
+		batchIndex,
+		batchCount,
+		useObjectNames,
 	);
 	if (!outputPath || destination.kind === 'file' || !(await exists(outputPath))) return outputPath;
 
@@ -246,25 +366,28 @@ export async function resolveWorkflowExportOutputPath(
 	const extension = extname(outputPath);
 	const filename = basename(outputPath);
 	const stem = filename.slice(0, filename.length - extension.length);
-	for (let suffix = 2; ; suffix++) {
+	for (let suffix = 2; suffix <= MAX_EXPORT_FILENAME_SUFFIX; suffix++) {
 		const suffixText = `-${suffix}`;
 		const fittedStem = fitFilenamePart(
 			stem,
-			MAX_WORKFLOW_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${suffixText}${extension}`, 'utf8'),
+			MAX_EXPORT_FILENAME_BYTES - Buffer.byteLength(`${suffixText}${extension}`, 'utf8'),
+			objectType,
 		);
 		const candidate = join(directory, `${fittedStem}${suffixText}${extension}`);
 		if (!(await exists(candidate))) return candidate;
 	}
+	throw new Error(`No available export filename for ${outputPath} after suffix ${MAX_EXPORT_FILENAME_SUFFIX}.`);
 }
 
-export interface WorkflowExportPathRequest {
+export interface ExportPathRequest {
 	destination: WorkflowExportDestination;
 	defaultDirectory: string;
-	mode: WorkflowExportMode;
-	workflows: readonly Pick<ExportWorkflowChoice, 'id' | 'name'>[];
+	objectType: ExporterObjectType;
+	mode: ExportMode;
+	objects: readonly Pick<ExportCatalogItem, 'id' | 'name'>[];
 	batchIndex: number;
 	batchCount: number;
-	useWorkflowNames?: boolean;
+	useObjectNames?: boolean;
 }
 
 const directoryExportQueues = new Map<string, Promise<void>>();
@@ -284,31 +407,57 @@ function serializeDirectoryExport<T>(directory: string, operation: () => Promise
 	return result;
 }
 
-/**
- * Resolves and publishes a directory export as one serialized operation so
- * command and sidebar callers cannot select the same available filename.
- * Explicit file destinations remain verbatim and rely on backend no-overwrite
- * publication for their final atomic safeguard.
- */
-export async function exportWorkflowBatchToAvailablePath<T>(
-	request: WorkflowExportPathRequest,
+/** Serializes path selection and publication for every exporter sharing a directory. */
+export async function exportBatchToAvailablePath<T>(
+	request: ExportPathRequest,
 	exporter: (outputPath: string | undefined) => Promise<T>,
 	exists: PathExists = pathExists,
 ): Promise<T> {
 	const run = async (): Promise<T> => {
-		const outputPath = await resolveWorkflowExportOutputPath(
+		const outputPath = await resolveExportOutputPath(
 			request.destination,
 			request.defaultDirectory,
+			request.objectType,
 			request.mode,
-			request.workflows,
+			request.objects,
 			request.batchIndex,
 			request.batchCount,
-			request.useWorkflowNames,
+			request.useObjectNames,
 			exists,
 		);
 		return exporter(outputPath);
 	};
-
 	if (request.destination.kind === 'file') return run();
 	return serializeDirectoryExport(request.destination.outputPath ?? request.defaultDirectory, run);
+}
+
+export interface WorkflowExportPathRequest {
+	destination: WorkflowExportDestination;
+	defaultDirectory: string;
+	mode: WorkflowExportMode;
+	workflows: readonly Pick<ExportWorkflowChoice, 'id' | 'name'>[];
+	batchIndex: number;
+	batchCount: number;
+	useWorkflowNames?: boolean;
+}
+
+export function exportWorkflowBatchToAvailablePath<T>(
+	request: WorkflowExportPathRequest,
+	exporter: (outputPath: string | undefined) => Promise<T>,
+	exists: PathExists = pathExists,
+): Promise<T> {
+	return exportBatchToAvailablePath(
+		{
+			destination: request.destination,
+			defaultDirectory: request.defaultDirectory,
+			objectType: 'workflow',
+			mode: request.mode,
+			objects: request.workflows,
+			batchIndex: request.batchIndex,
+			batchCount: request.batchCount,
+			useObjectNames: request.useWorkflowNames,
+		},
+		exporter,
+		exists,
+	);
 }

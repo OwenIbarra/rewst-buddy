@@ -3,12 +3,13 @@ import { createMockContext, initTestEnvironment, stub } from '@test';
 import * as assert from 'assert';
 import * as Mocha from 'mocha';
 import vscode from 'vscode';
+import { CommandInitiater } from '@commands';
 import { WorkflowExportViewProvider } from '@ui';
 import { activate, registerWorkflowExportViewProvider } from './extension';
 
 const { suite, test, setup, teardown } = Mocha;
 
-suite('Unit: extension activation workflow exporter registration', () => {
+suite('Unit: extension activation Rewst Exporter registration', () => {
 	const restores: Restore[] = [];
 
 	setup(() => {
@@ -54,7 +55,7 @@ suite('Unit: extension activation workflow exporter registration', () => {
 		assert.strictEqual(registrationDisposals, 1);
 	});
 
-	test('activate registers the workflow exporter through the extension context with retained webview state', async () => {
+	test('activate registers the Rewst Exporter through the extension context with retained webview state', async () => {
 		const registrations: {
 			viewType: string;
 			provider: vscode.WebviewViewProvider;
@@ -70,7 +71,13 @@ suite('Unit: extension activation workflow exporter registration', () => {
 		);
 		const context = createMockContext();
 		let receivedContext: Pick<vscode.ExtensionContext, 'extensionUri' | 'subscriptions'> | undefined;
-		const registrationObserved = new Error('workflow export registration observed');
+		let workflowRegistrationCalls = 0;
+		const commandsReached = new Error('command registration reached');
+		restores.push(
+			stub(CommandInitiater, 'registerCommands', () => {
+				throw commandsReached;
+			}),
+		);
 
 		await assert.rejects(
 			() =>
@@ -78,17 +85,20 @@ suite('Unit: extension activation workflow exporter registration', () => {
 					initializeBackend: () => new vscode.Disposable(() => {}),
 					subscribeBackend: () => new vscode.Disposable(() => {}),
 					registerWorkflowExportViewProvider: activationContext => {
+						workflowRegistrationCalls++;
 						receivedContext = activationContext;
-						registerWorkflowExportViewProvider(activationContext);
-						throw registrationObserved;
+						return registerWorkflowExportViewProvider(activationContext);
 					},
 				}),
-			error => error === registrationObserved,
+			error => error === commandsReached,
 		);
 
-		const workflowRegistration = registrations.find(
+		assert.strictEqual(workflowRegistrationCalls, 1);
+		const workflowRegistrations = registrations.filter(
 			registration => registration.viewType === WorkflowExportViewProvider.viewType,
 		);
+		assert.strictEqual(workflowRegistrations.length, 1);
+		const workflowRegistration = workflowRegistrations[0];
 		assert.ok(workflowRegistration);
 		assert.ok(workflowRegistration.provider instanceof WorkflowExportViewProvider);
 		assert.deepStrictEqual(workflowRegistration.options, {

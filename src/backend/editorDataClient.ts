@@ -1,6 +1,9 @@
 import { invoke } from './operations';
 import type { CrateDetail, UnpackSuccess } from '../crates/crateUnpack';
 import type { WorkflowExportResult } from '../../packages/mcp-server/src/capabilities/workflowExportCapability';
+import type { ExportCatalogRow } from '../../packages/mcp-server/src/editorData';
+
+export type { ExportCatalogRow } from '../../packages/mcp-server/src/editorData';
 
 export interface EditorDataInvokeOptions {
 	onEvent?: (event: unknown) => void;
@@ -31,6 +34,8 @@ export interface PreviewWorkflowRow {
 
 export type ExportWorkflowRow = PreviewWorkflowRow;
 
+export type ExportTemplateRow = ExportCatalogRow;
+
 export interface PreviewExecutionRow {
 	id?: string | null;
 	status?: string | null;
@@ -47,6 +52,22 @@ export interface CrateListRow {
 	category?: string | null;
 	description?: string | null;
 	isUnpackedForSelectedOrg?: boolean | null;
+}
+
+export type ExportFormRow = ExportCatalogRow;
+
+export interface EditorObjectExportResult {
+	status: 'saved';
+	orgId: string;
+	objectType: 'template' | 'form';
+	objectIds: string[];
+	recommendedFilename?: string;
+	outputPath: string | null;
+	bytes?: number;
+	version?: unknown;
+	exportedAt?: unknown;
+	objectCount?: number;
+	signingPresent?: boolean;
 }
 
 function call<T>(operation: string, input: Record<string, unknown>, options?: EditorDataInvokeOptions): Promise<T> {
@@ -95,6 +116,35 @@ export const editorDataClient = {
 	},
 	getCrateDetail(input: { sessionId: string; orgId: string; crateId: string }, options?: EditorDataInvokeOptions) {
 		return call<CrateDetail | null>('crates.detail', input, options);
+	},
+	listExportForms(input: { sessionId: string; orgId: string }, options?: EditorDataInvokeOptions) {
+		return call<ExportFormRow[]>('exports.forms.list', input, options);
+	},
+	listExportTemplates(input: { sessionId: string; orgId: string }, options?: EditorDataInvokeOptions) {
+		return call<ExportTemplateRow[]>('exports.templates.list', input, options);
+	},
+	exportObjects(
+		input: {
+			sessionId: string;
+			orgId: string;
+			objectType: 'template' | 'form';
+			objectIds: string[];
+			outputPath?: string;
+		},
+		options?: EditorDataInvokeOptions,
+	) {
+		return call<EditorObjectExportResult>('exports.objects.run', input, options);
+	},
+	runExportCapability(
+		input: {
+			sessionId: string;
+			orgId: string;
+			name: 'buddy_export_templates' | 'buddy_export_forms';
+			arguments: Record<string, unknown>;
+		},
+		options?: EditorDataInvokeOptions,
+	) {
+		return call<string>('exports.run', input, options);
 	},
 	unpackCrate(
 		input: {

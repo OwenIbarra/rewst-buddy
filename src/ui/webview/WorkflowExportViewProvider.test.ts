@@ -1,11 +1,13 @@
-import { createMockSession, initTestEnvironment, installMockSessions, stub } from '@test';
-import { readFileSync } from 'node:fs';
+import { SessionManager } from '@sessions';
+import { createMockSession, initTestEnvironment, stub } from '@test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import vm from 'node:vm';
 import * as assert from 'assert';
 import * as Mocha from 'mocha';
 import vscode from 'vscode';
 import { editorDataClient } from '../../backend/editorDataClient';
+import { createWorkflowExporterHarness, FakeWorkflowExporterElement } from '../../test/helpers/workflowExporterHarness';
 import { WORKFLOW_EXPORT_BOOTSTRAP_PAYLOAD } from '../../../packages/mcp-server/src/capabilities/workflowExportCapability';
 import {
 	WorkflowExportViewProvider,
@@ -66,12 +68,12 @@ suite('Unit: WorkflowExportViewProvider', () => {
 
 	setup(() => {
 		initTestEnvironment();
-		installMockSessions([]);
+		SessionManager._resetForTesting();
 	});
 
 	teardown(() => {
 		while (restores.length) restores.pop()!();
-		installMockSessions([]);
+		SessionManager._resetForTesting();
 	});
 
 	function stubClient<K extends keyof typeof editorDataClient>(key: K, value: (typeof editorDataClient)[K]): void {
@@ -89,7 +91,7 @@ suite('Unit: WorkflowExportViewProvider', () => {
 				allManagedOrgs: [{ id: orgId, name: orgName }],
 			},
 		});
-		installMockSessions([session]);
+		SessionManager._setSessionsForTesting([session], false);
 	}
 
 	function workflowRows(count: number): {
@@ -125,14 +127,17 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		};
 	}
 
-	async function loadProviderCatalog(rows: ReturnType<typeof workflowRows>): Promise<{
+	async function loadProviderCatalog(
+		rows: ReturnType<typeof workflowRows>,
+		defaultDirectory = '/exports',
+	): Promise<{
 		provider: WorkflowExportViewProvider;
 		fake: ReturnType<typeof fakeView>;
 	}> {
 		setActiveOrganization();
 		stubClient(
 			'getWorkflowExportDefaultDirectory',
-			(async () => '/exports') as typeof editorDataClient.getWorkflowExportDefaultDirectory,
+			(async () => defaultDirectory) as typeof editorDataClient.getWorkflowExportDefaultDirectory,
 		);
 		stubClient('listExportWorkflows', (async () => rows) as typeof editorDataClient.listExportWorkflows);
 		const provider = new WorkflowExportViewProvider(vscode.Uri.file('/extension'));
@@ -188,74 +193,18 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		usable.profile.user.id = 'user-valid';
 
 		assert.deepStrictEqual(workflowExportOrganizations([unusable]), []);
-		assert.deepStrictEqual(workflowExportOrganizations([unusable, usable]), [{ id: 'org-1', name: 'Org One' }]);
+		assert.deepStrictEqual(
+			workflowExportOrganizations([usable]).map(org => ({ id: org.id, name: org.name })),
+			[{ id: 'org-1', name: 'Org One' }],
+		);
+		assert.strictEqual(workflowExportOrganizations([usable])[0]?.sessionId, 'user-valid');
+		assert.deepStrictEqual(
+			workflowExportOrganizations([unusable, usable]).map(org => ({ id: org.id, name: org.name })),
+			[{ id: 'org-1', name: 'Org One' }],
+		);
 	});
 
-	test('resolves each operation through a later capable session when the first is invalid', async () => {
-		const { session: first } = createMockSession({
-			profile: {
-				org: { id: 'org-1', name: 'Org One' },
-				allManagedOrgs: [{ id: 'org-1', name: 'Org One' }],
-			},
-		});
-		const { session: second } = createMockSession({
-			profile: {
-				org: { id: 'org-1', name: 'Org One' },
-				allManagedOrgs: [{ id: 'org-1', name: 'Org One' }],
-			},
-		});
-		first.profile.user.id = 'user-invalid';
-		second.profile.user.id = 'user-valid';
-		let firstChecks = 0;
-		let secondChecks = 0;
-		restores.push(
-			stub(first, 'ensureValid', async () => {
-				firstChecks++;
-				return false;
-			}),
-		);
-		restores.push(
-			stub(second, 'ensureValid', async () => {
-				secondChecks++;
-				return true;
-			}),
-		);
-		installMockSessions([first, second]);
-		const catalogSessionIds: string[] = [];
-		const exportSessionIds: string[] = [];
-		stubClient(
-			'getWorkflowExportDefaultDirectory',
-			(async () => '/exports') as typeof editorDataClient.getWorkflowExportDefaultDirectory,
-		);
-		stubClient('listExportWorkflows', (async input => {
-			catalogSessionIds.push(input.sessionId);
-			return workflowRows(1);
-		}) as typeof editorDataClient.listExportWorkflows);
-		stubClient('exportWorkflows', (async input => {
-			exportSessionIds.push(input.sessionId);
-			return exportResult(input.workflowIds, input.outputPath ?? null);
-		}) as typeof editorDataClient.exportWorkflows);
-		const provider = new WorkflowExportViewProvider(vscode.Uri.file('/extension'));
-		const fake = fakeView();
-		provider.resolveWebviewView(fake.view);
-
-		await fake.state.listener?.({ type: 'ready' });
-		await fake.state.listener?.({ type: 'loadCatalog', orgId: 'org-1' });
-		await fake.state.listener?.({
-			type: 'startExport',
-			orgId: 'org-1',
-			workflowIds: ['wf-1'],
-			mode: 'bundle',
-		});
-
-		assert.deepStrictEqual(catalogSessionIds, ['user-valid']);
-		assert.deepStrictEqual(exportSessionIds, ['user-valid']);
-		assert.strictEqual(firstChecks, 2);
-		assert.strictEqual(secondChecks, 2);
-		provider.dispose();
-	});
-
-	test('renders a script-enabled persistent workflow exporter without embedding credentials', () => {
+	test('renders a script-enabled persistent Rewst Exporter without embedding credentials', () => {
 		const provider = new WorkflowExportViewProvider(vscode.Uri.file('/extension'));
 		const fake = fakeView();
 		provider.resolveWebviewView(fake.view);
@@ -265,7 +214,13 @@ suite('Unit: WorkflowExportViewProvider', () => {
 			fake.state.options.localResourceRoots?.map(uri => uri.fsPath),
 			[vscode.Uri.joinPath(vscode.Uri.file('/extension'), 'media', 'workflow-exporter').fsPath],
 		);
+		assert.match(fake.state.html, /<title>Rewst Exporter<\/title>/);
+		assert.match(fake.state.html, /<h2>Rewst Exporter<\/h2>/);
 		assert.match(fake.state.html, /id="workflowSearch"/);
+		assert.match(fake.state.html, /data-object-type="workflow"[^>]*>Workflows<\/button>/);
+		assert.match(fake.state.html, /data-object-type="template"[^>]*>Templates<\/button>/);
+		assert.match(fake.state.html, /data-object-type="form"[^>]*>Forms<\/button>/);
+		assert.doesNotMatch(fake.state.html, /runDelegatedExport|delegatedExporter/);
 		assert.match(fake.state.html, /id="organizationList"/);
 		assert.match(fake.state.html, /id="changeOrganization"/);
 		assert.doesNotMatch(fake.state.html, /<select id="organization"/);
@@ -287,6 +242,40 @@ suite('Unit: WorkflowExportViewProvider', () => {
 
 		await assert.doesNotReject(() => fake.state.listener?.(null) ?? Promise.resolve());
 		await assert.doesNotReject(() => fake.state.listener?.({ type: 'unknown' }) ?? Promise.resolve());
+		provider.dispose();
+	});
+
+	test('defaults omitted object types to workflow and rejects unsupported types', async () => {
+		setActiveOrganization();
+		let workflowLoads = 0;
+		stubClient('listExportWorkflows', (async () => {
+			workflowLoads++;
+			return workflowRows(1);
+		}) as typeof editorDataClient.listExportWorkflows);
+		const provider = new WorkflowExportViewProvider(vscode.Uri.file('/extension'));
+		const fake = fakeView();
+		provider.resolveWebviewView(fake.view);
+
+		await fake.state.listener?.({ type: 'loadCatalog', orgId: 'org-1' });
+		assert.strictEqual(messagesOfType(fake, 'catalogLoaded').at(-1)?.objectType, 'workflow');
+		await fake.state.listener?.({ type: 'loadCatalog', orgId: 'org-1', objectType: 'unknown' });
+		await fake.state.listener?.({ type: 'applyFilters', orgId: 'org-1', objectType: 'unknown', filters: {} });
+		await fake.state.listener?.({ type: 'chooseFolder', objectType: 'unknown' });
+		await fake.state.listener?.({ type: 'chooseFile', objectType: 'unknown', objectCount: 1 });
+		await fake.state.listener?.({
+			type: 'startExport',
+			orgId: 'org-1',
+			objectType: 'unknown',
+			objectIds: ['wf-1'],
+		});
+
+		assert.strictEqual(workflowLoads, 1);
+		assert.strictEqual(messagesOfType(fake, 'catalogLoaded').length, 1);
+		assert.strictEqual(messagesOfType(fake, 'exportComplete').length, 0);
+		assert.deepStrictEqual(
+			messagesOfType(fake, 'error').map(message => message.message),
+			Array(5).fill('Choose a supported export object type.'),
+		);
 		provider.dispose();
 	});
 
@@ -318,6 +307,42 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		provider.dispose();
 	});
 
+	test('webview clears stale catalog state, reapplies filters, and honors the host bundle limit', () => {
+		const harness = createWorkflowExporterHarness({
+			organizations: [{ id: 'org-1', name: 'Org One' }],
+			selectedOrgId: 'org-1',
+			workflows: [{ id: 'wf-1' }, { id: 'wf-2' }, { id: 'wf-3' }],
+			visibleIds: ['wf-1', 'wf-2', 'wf-3'],
+			selectedIds: ['wf-1', 'wf-2', 'wf-3'],
+			tags: [],
+			filters: { search: 'daily', tagIds: [], tagMatch: 'any' },
+			mode: 'bundle',
+		});
+		const { element } = harness;
+		harness.send({
+			type: 'bootstrap',
+			organizations: [{ id: 'org-1', name: 'Org One' }],
+			maxWorkflowsPerExport: 2,
+		});
+		assert.strictEqual(element('chooseFile').disabled, true);
+		assert.strictEqual(element('workflowSearch').getAttribute('aria-label'), 'Search workflows');
+		assert.strictEqual(element('tagList').getAttribute('aria-label'), 'Workflows tags');
+		harness.postedMessages.length = 0;
+		harness.send({ type: 'catalogLoaded', workflows: [{ id: 'wf-1' }], tags: [] });
+		assert.strictEqual((harness.postedMessages.at(-1) as { type?: string })?.type, 'applyFilters');
+		assert.strictEqual(
+			(harness.postedMessages.at(-1) as { filters?: { search?: string } })?.filters?.search,
+			'daily',
+		);
+		assert.strictEqual(element('tagFilters').hidden, false);
+		assert.strictEqual(element('tagFiltersUnavailable').hidden, true);
+		harness.send({ type: 'organizations', organizations: [{ id: 'org-2', name: 'Org Two' }] });
+		assert.strictEqual(harness.savedState?.selectedOrgId, '');
+		assert.strictEqual((harness.savedState?.workflows as unknown[])?.length, 0);
+		assert.strictEqual((harness.savedState?.visibleIds as unknown[])?.length, 0);
+		assert.strictEqual((harness.savedState?.selectedIds as unknown[])?.length, 0);
+	});
+
 	test('reports bootstrap failures without posting a partial bootstrap payload', async () => {
 		stubClient('getWorkflowExportDefaultDirectory', (async () =>
 			Promise.reject(
@@ -332,7 +357,7 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		assert.deepStrictEqual(messagesOfType(fake, 'bootstrap'), []);
 		assert.deepStrictEqual(
 			messagesOfType(fake, 'error').map(message => message.message),
-			['Unable to initialize workflow exports: directory unavailable'],
+			['Unable to initialize Rewst Exporter: directory unavailable'],
 		);
 		provider.dispose();
 	});
@@ -351,167 +376,25 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		);
 	});
 
-	test('webview refreshes stale catalogs, renders timestamp digit counts, and honors the host bundle limit', () => {
-		class FakeElement {
-			value = '';
-			checked = false;
-			disabled = false;
-			hidden = false;
-			textContent = '';
-			className = '';
-			innerHTML = '';
-			onclick?: (event: { currentTarget: FakeElement; target: FakeElement }) => void;
-			oninput?: (event: { target: FakeElement }) => void;
-			onchange?: (event: { target: FakeElement }) => void;
-			dataset: Record<string, string> = {};
-			querySelectorAll(): FakeElement[] {
-				return [];
-			}
-			focus(): void {}
-		}
-		const elements = new Map<string, FakeElement>();
-		const element = (id: string): FakeElement => {
-			let result = elements.get(id);
-			if (!result) {
-				result = new FakeElement();
-				elements.set(id, result);
-			}
-			return result;
-		};
-		const modeRadios = ['separate', 'bundle'].map(value => Object.assign(new FakeElement(), { value }));
-		const tagRadios = ['any', 'all'].map(value => Object.assign(new FakeElement(), { value }));
-		let listener: ((event: { data: Record<string, unknown> }) => void) | undefined;
-		let savedState: Record<string, unknown> | undefined;
-		const posted: Record<string, unknown>[] = [];
-		const source = readFileSync(join(process.cwd(), 'media/workflow-exporter/main.js'), 'utf8');
-		vm.runInNewContext(source, {
-			acquireVsCodeApi: () => ({
-				getState: () => ({
-					organizations: [{ id: 'org-1', name: 'Org One' }],
-					selectedOrgId: 'org-1',
-					workflows: [
-						{ id: 'wf-1', name: 'Epoch seconds', updatedAt: '946728000' },
-						{ id: 'wf-2', name: 'Epoch milliseconds', updatedAt: '946728000000' },
-						{ id: 'wf-3', name: 'Invalid timestamp', updatedAt: 'not-a-date' },
-					],
-					visibleIds: ['wf-1', 'wf-2', 'wf-3'],
-					selectedIds: ['wf-1', 'wf-2', 'wf-3'],
-					tags: [{ id: 'stale', name: 'Stale' }],
-					filters: { search: 'daily', tagIds: ['stale'], tagMatch: 'any' },
-					mode: 'bundle',
-				}),
-				setState: (value: Record<string, unknown>) => {
-					savedState = value;
-				},
-				postMessage: (message: Record<string, unknown>) => {
-					posted.push(message);
-				},
-			}),
-			document: {
-				getElementById: element,
-				querySelectorAll: (selector: string) => (selector.includes('tagMatch') ? tagRadios : modeRadios),
-			},
-			window: {
-				addEventListener: (_type: string, handler: typeof listener) => {
-					listener = handler;
-				},
-			},
-			Set,
-			Date,
-			Number,
-			String,
-		});
-		assert.strictEqual((element('workflowList').innerHTML.match(/2000/g) ?? []).length, 2);
-		assert.match(element('workflowList').innerHTML, /edited unknown/);
-
-		listener?.({
-			data: {
-				type: 'bootstrap',
-				organizations: [{ id: 'org-1', name: 'Org One' }],
-				catalogOrgId: 'org-other',
-				maxWorkflowsPerExport: 2,
-			},
-		});
-		assert.strictEqual(element('chooseFile').disabled, true);
-		assert.strictEqual(savedState?.catalogOrgId, 'org-other');
-		assert.ok(posted.some(message => message.type === 'loadCatalog' && message.orgId === 'org-1'));
-		posted.length = 0;
-		listener?.({ data: { type: 'catalogLoaded', orgId: 'org-1', workflows: [{ id: 'wf-1' }], tags: [] } });
-		assert.strictEqual(posted.at(-1)?.type, 'applyFilters');
-		assert.strictEqual((posted.at(-1)?.filters as { search?: string })?.search, 'daily');
-		assert.strictEqual(savedState?.catalogOrgId, 'org-1');
-		listener?.({ data: { type: 'catalogLoaded', orgId: 'org-1', workflows: [], tags: [] } });
-		posted.length = 0;
-		listener?.({
-			data: {
-				type: 'bootstrap',
-				organizations: [{ id: 'org-1', name: 'Org One' }],
-				catalogOrgId: 'org-1',
-				maxWorkflowsPerExport: 2,
-			},
-		});
-		assert.ok(posted.some(message => message.type === 'loadCatalog' && message.orgId === 'org-1'));
-		posted.length = 0;
-		listener?.({
-			data: {
-				type: 'bootstrap',
-				organizations: [{ id: 'org-2', name: 'Org Two' }],
-				catalogOrgId: null,
-				maxWorkflowsPerExport: 2,
-			},
-		});
-		assert.strictEqual(savedState?.selectedOrgId, 'org-2');
-		assert.ok(posted.some(message => message.type === 'loadCatalog' && message.orgId === 'org-2'));
-		assert.ok(!posted.some(message => message.type === 'loadCatalog' && message.orgId === 'org-1'));
-		listener?.({ data: { type: 'organizations', organizations: [{ id: 'org-3', name: 'Org Three' }] } });
-		assert.strictEqual(savedState?.selectedOrgId, '');
-		assert.strictEqual(savedState?.catalogOrgId, '');
-		assert.strictEqual((savedState?.workflows as unknown[])?.length, 0);
-		assert.strictEqual((savedState?.visibleIds as unknown[])?.length, 0);
-		assert.strictEqual((savedState?.selectedIds as unknown[])?.length, 0);
-		assert.strictEqual((savedState?.tags as unknown[])?.length, 0);
-		assert.strictEqual((savedState?.filters as { tagIds?: unknown[] })?.tagIds?.length, 0);
-	});
-
 	test('rehydrates persisted webview controls and clears stale export state on bootstrap', () => {
-		class FakeElement {
-			value = '';
-			checked = false;
-			disabled = false;
-			hidden = false;
-			textContent = '';
-			className = '';
-			innerHTML = '';
-			onclick?: (event: { currentTarget: FakeElement; target: FakeElement }) => void;
-			oninput?: (event: { target: FakeElement }) => void;
-			onchange?: (event: { target: FakeElement }) => void;
-			dataset: Record<string, string> = {};
-			querySelectorAll(): FakeElement[] {
-				return [];
-			}
-			focus(): void {}
-		}
-
-		const elements = new Map<string, FakeElement>();
-		const element = (id: string): FakeElement => {
-			let result = elements.get(id);
-			if (!result) {
-				result = new FakeElement();
-				elements.set(id, result);
-			}
-			return result;
-		};
-		const modeRadios = ['separate', 'bundle'].map(value => Object.assign(new FakeElement(), { value }));
-		const tagRadios = ['any', 'all'].map(value => Object.assign(new FakeElement(), { value }));
-		let messageListener: ((event: { data: unknown }) => void) | undefined;
-		let savedState: Record<string, unknown> | undefined;
-		let saveCount = 0;
 		const persistedState = {
+			objectType: 'form',
 			organizations: [],
-			workflows: [],
-			visibleIds: [],
-			selectedIds: [],
-			tags: [],
+			selectedOrgId: 'org-1',
+			catalogOrgId: 'org-1',
+			catalogObjectType: 'form',
+			objects: [
+				{
+					id: 'form-old',
+					name: 'Old form',
+					orgId: 'org-1',
+					orgName: 'Org One',
+					tags: [],
+				},
+			],
+			visibleIds: ['form-old'],
+			selectedIds: ['form-old'],
+			tags: [{ id: 'onboarding', name: 'Onboarding' }],
 			filters: {
 				search: 'daily',
 				tagIds: [],
@@ -525,30 +408,8 @@ suite('Unit: WorkflowExportViewProvider', () => {
 			useWorkflowNames: true,
 			exporting: true,
 		};
-		const source = readFileSync(join(process.cwd(), 'media/workflow-exporter/main.js'), 'utf8');
-		vm.runInNewContext(source, {
-			acquireVsCodeApi: () => ({
-				getState: () => persistedState,
-				setState: (value: Record<string, unknown>) => {
-					savedState = value;
-					saveCount++;
-				},
-				postMessage: () => {},
-			}),
-			document: {
-				getElementById: element,
-				querySelectorAll: (selector: string) => (selector.includes('tagMatch') ? tagRadios : modeRadios),
-			},
-			window: {
-				addEventListener: (_type: string, listener: (event: { data: unknown }) => void) => {
-					messageListener = listener;
-				},
-			},
-			Set,
-			Date,
-			Number,
-			String,
-		});
+		const harness = createWorkflowExporterHarness(persistedState);
+		const { element, modeRadios, objectButtons, createdFilters, updatedFilters, postedMessages } = harness;
 
 		assert.strictEqual(element('workflowSearch').value, 'daily');
 		assert.strictEqual(element('createdFrom').value, '2026-01-01');
@@ -557,17 +418,253 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		assert.strictEqual(element('updatedTo').value, '2026-02-28');
 		assert.strictEqual(modeRadios.find(radio => radio.value === 'bundle')?.checked, true);
 		assert.strictEqual(element('useWorkflowNames').checked, true);
-		element('organizationSearch').oninput?.({ target: Object.assign(new FakeElement(), { value: 'org' }) });
-		element('workflowSearch').oninput?.({ target: Object.assign(new FakeElement(), { value: 'work' }) });
-		element('tagSearch').oninput?.({ target: Object.assign(new FakeElement(), { value: 'tag' }) });
-		assert.strictEqual(saveCount, 0);
+		assert.strictEqual(element('filters-heading').textContent, 'Forms');
+		assert.strictEqual(element('selectionCount').textContent, '1 selected · 1 visible');
+		assert.strictEqual(element('filenameOptionLabel').textContent, 'Use form names for filenames');
+		assert.ok(createdFilters.every(section => !section.hidden));
+		assert.ok(updatedFilters.every(section => !section.hidden));
+		element('organizationSearch').oninput?.({
+			target: Object.assign(new FakeWorkflowExporterElement(), { value: 'org' }),
+		});
+		element('workflowSearch').oninput?.({
+			target: Object.assign(new FakeWorkflowExporterElement(), { value: 'work' }),
+		});
+		element('tagSearch').oninput?.({ target: Object.assign(new FakeWorkflowExporterElement(), { value: 'tag' }) });
+		assert.strictEqual(harness.saveCount, 0);
 
-		messageListener?.({ data: { type: 'bootstrap', organizations: [], defaultDirectory: '/exports' } });
-		assert.strictEqual(savedState?.exporting, false);
+		harness.send({
+			type: 'bootstrap',
+			organizations: [{ id: 'org-1', name: 'Org One' }],
+			defaultDirectory: '/exports',
+		});
+		assert.strictEqual(harness.savedState?.exporting, false);
+		assert.ok(!postedMessages.some(message => (message as { type?: string }).type === 'loadCatalog'));
+		objectButtons
+			.find(button => button.dataset.objectType === 'template')
+			?.onclick?.({
+				currentTarget: objectButtons.find(button => button.dataset.objectType === 'template')!,
+				target: objectButtons.find(button => button.dataset.objectType === 'template')!,
+			});
+		assert.strictEqual((harness.savedState?.selectedIds as unknown[] | undefined)?.length, 0);
+		assert.strictEqual(harness.savedState?.catalogOrgId, '');
+		assert.strictEqual(harness.savedState?.catalogObjectType, '');
+		assert.ok(
+			postedMessages.some(
+				message =>
+					(message as { type?: string; objectType?: string }).type === 'loadCatalog' &&
+					(message as { objectType?: string }).objectType === 'template',
+			),
+		);
+		harness.send({
+			type: 'catalogLoaded',
+			objectType: 'template',
+			orgId: 'org-1',
+			objects: [{ id: 'template-1', name: 'Welcome', tags: [] }],
+			tags: [],
+			fieldSupport: { tags: true, createdAt: true, updatedAt: true },
+			maxObjectsPerExport: 25,
+		});
+		assert.strictEqual((harness.savedState?.selectedIds as unknown[] | undefined)?.length, 0);
+		assert.strictEqual(harness.savedState?.catalogObjectType, 'template');
+		assert.strictEqual(element('status').textContent, 'Loaded 1 templates.');
 		element('refreshCatalog').disabled = true;
-		messageListener?.({ data: { type: 'error', message: 'Unable to load workflows: failed' } });
+		harness.send({
+			type: 'error',
+			objectType: 'template',
+			orgId: 'org-1',
+			message: 'Unable to load templates: failed',
+		});
 		assert.strictEqual(element('refreshCatalog').disabled, false);
-		assert.strictEqual((savedState?.filters as { search?: string } | undefined)?.search, '');
+		assert.strictEqual((harness.savedState?.filters as { search?: string } | undefined)?.search, '');
+	});
+
+	test('cancels stale catalog requests across organization and object-type switches', async () => {
+		const { session } = createMockSession({
+			profile: {
+				org: { id: 'org-1', name: 'Org One' },
+				allManagedOrgs: [
+					{ id: 'org-1', name: 'Org One' },
+					{ id: 'org-2', name: 'Org Two' },
+				],
+			},
+		});
+		SessionManager._setSessionsForTesting([session], false);
+		let resolveWorkflowRows!: (rows: ReturnType<typeof workflowRows>) => void;
+		const pendingWorkflows = new Promise<ReturnType<typeof workflowRows>>(resolve => {
+			resolveWorkflowRows = resolve;
+		});
+		let staleSignal: AbortSignal | undefined;
+		stubClient('listExportWorkflows', ((_input, options) => {
+			staleSignal = options?.signal;
+			return pendingWorkflows;
+		}) as typeof editorDataClient.listExportWorkflows);
+		stubClient('listExportTemplates', (async () => [
+			{ id: 'template-2', name: 'Current template', orgId: 'org-2' },
+		]) as typeof editorDataClient.listExportTemplates);
+		const provider = new WorkflowExportViewProvider(vscode.Uri.file('/extension'));
+		const fake = fakeView();
+		provider.resolveWebviewView(fake.view);
+
+		const staleLoad = fake.state.listener?.({ type: 'loadCatalog', orgId: 'org-1', objectType: 'workflow' });
+		await fake.state.listener?.({ type: 'loadCatalog', orgId: 'org-2', objectType: 'template' });
+		assert.strictEqual(staleSignal?.aborted, true);
+		resolveWorkflowRows(workflowRows(1));
+		await staleLoad;
+
+		assert.deepStrictEqual(
+			messagesOfType(fake, 'catalogLoaded').map(message => ({
+				orgId: message.orgId,
+				objectType: message.objectType,
+				ids: (message.objects as { id: string }[]).map(item => item.id),
+			})),
+			[{ orgId: 'org-2', objectType: 'template', ids: ['template-2'] }],
+		);
+		assert.deepStrictEqual(messagesOfType(fake, 'error'), []);
+		provider.dispose();
+	});
+
+	test('loads, filters, and dispatches template and form exports through the shared provider', async () => {
+		setActiveOrganization();
+		const activeSession = SessionManager.getActiveSessions()[0]!;
+		const sessionId = activeSession.sessionId ?? activeSession.profile.user.id!;
+		stubClient(
+			'getWorkflowExportDefaultDirectory',
+			(async () => '/exports') as typeof editorDataClient.getWorkflowExportDefaultDirectory,
+		);
+		stubClient('listExportTemplates', (async () => [
+			{
+				id: 'template-1',
+				name: 'Welcome / template',
+				orgId: 'org-1',
+				createdAt: '2026-01-01T00:00:00.000Z',
+				updatedAt: '2026-01-31T00:00:00.000Z',
+				tags: [{ id: 'customer', name: 'Customer' }],
+			},
+		]) as typeof editorDataClient.listExportTemplates);
+		stubClient('listExportForms', (async () => [
+			{
+				id: 'form-1',
+				name: 'Employee / intake',
+				orgId: 'org-1',
+				createdAt: '2026-02-01T00:00:00.000Z',
+				updatedAt: '2026-02-28T00:00:00.000Z',
+				tags: [{ id: 'employee', name: 'Employee' }],
+			},
+		]) as typeof editorDataClient.listExportForms);
+		const exportCalls: Parameters<typeof editorDataClient.exportObjects>[0][] = [];
+		const exportSignals: (AbortSignal | undefined)[] = [];
+		stubClient('exportObjects', (async (input, options) => {
+			exportCalls.push(input);
+			exportSignals.push(options?.signal);
+			return {
+				status: 'saved',
+				orgId: input.orgId,
+				objectType: input.objectType,
+				objectIds: input.objectIds,
+				outputPath: input.outputPath ?? null,
+			};
+		}) as typeof editorDataClient.exportObjects);
+		const provider = new WorkflowExportViewProvider(vscode.Uri.file('/extension'));
+		const fake = fakeView();
+		provider.resolveWebviewView(fake.view);
+		await fake.state.listener?.({ type: 'ready' });
+
+		await fake.state.listener?.({ type: 'loadCatalog', orgId: 'org-1', objectType: 'template' });
+		await fake.state.listener?.({
+			type: 'applyFilters',
+			objectType: 'template',
+			orgId: 'org-1',
+			filters: { search: 'welcome', tagIds: ['customer'], tagMatch: 'all', createdFrom: '2026-01-01' },
+		});
+		await fake.state.listener?.({
+			type: 'startExport',
+			objectType: 'template',
+			orgId: 'org-1',
+			objectIds: ['template-1'],
+			mode: 'bundle',
+		});
+
+		await fake.state.listener?.({ type: 'loadCatalog', orgId: 'org-1', objectType: 'form' });
+		await fake.state.listener?.({
+			type: 'startExport',
+			objectType: 'form',
+			orgId: 'org-1',
+			objectIds: ['form-1'],
+			mode: 'separate',
+			useObjectNames: true,
+		});
+
+		assert.deepStrictEqual(exportCalls, [
+			{
+				sessionId,
+				orgId: 'org-1',
+				objectType: 'template',
+				objectIds: ['template-1'],
+				outputPath: '/exports/rewst-templates-batch-001-of-001.json',
+			},
+			{
+				sessionId,
+				orgId: 'org-1',
+				objectType: 'form',
+				objectIds: ['form-1'],
+				outputPath: '/exports/Employee - intake--form-1.json',
+			},
+		]);
+		assert.strictEqual(exportSignals.length, 2);
+		assert.ok(exportSignals.every(signal => signal instanceof AbortSignal && !signal.aborted));
+		assert.deepStrictEqual(messagesOfType(fake, 'filterResult').at(-1), {
+			type: 'filterResult',
+			objectType: 'template',
+			orgId: 'org-1',
+			objectIds: ['template-1'],
+		});
+		assert.ok(
+			messagesOfType(fake, 'exportProgress').some(message =>
+				String(message.message).includes('Bundling 1 template'),
+			),
+		);
+		assert.deepStrictEqual(
+			messagesOfType(fake, 'exportComplete').map(message => ({
+				objectType: message.objectType,
+				exportedObjectCount: message.exportedObjectCount,
+				fileCount: message.fileCount,
+			})),
+			[
+				{ objectType: 'template', exportedObjectCount: 1, fileCount: 1 },
+				{ objectType: 'form', exportedObjectCount: 1, fileCount: 1 },
+			],
+		);
+		provider.dispose();
+	});
+
+	test('uses object-specific UI errors for template and form catalog and destination failures', async () => {
+		setActiveOrganization();
+		stubClient('getWorkflowExportDefaultDirectory', (async () =>
+			process.cwd()) as typeof editorDataClient.getWorkflowExportDefaultDirectory);
+		stubClient('listExportTemplates', (async () => {
+			throw new Error('template catalog unavailable');
+		}) as typeof editorDataClient.listExportTemplates);
+		stubClient('listExportForms', (async () => []) as typeof editorDataClient.listExportForms);
+		restores.push(
+			stub(vscode.window, 'showSaveDialog', (async () =>
+				vscode.Uri.file(join(process.cwd(), 'package.json'))) as typeof vscode.window.showSaveDialog),
+		);
+		const provider = new WorkflowExportViewProvider(vscode.Uri.file('/extension'));
+		const fake = fakeView();
+		provider.resolveWebviewView(fake.view);
+
+		await fake.state.listener?.({ type: 'loadCatalog', orgId: 'org-1', objectType: 'template' });
+		await fake.state.listener?.({ type: 'chooseFile', objectType: 'form', objectCount: 1 });
+
+		assert.deepStrictEqual(
+			messagesOfType(fake, 'error').map(message => message.message),
+			[
+				'Unable to load templates: template catalog unavailable',
+				'Choose a new file name; form exports never overwrite files.',
+			],
+		);
+		assert.ok(messagesOfType(fake, 'error').every(message => !String(message.message).includes('workflow')));
+		provider.dispose();
 	});
 
 	test('loads metadata, applies filters, and exports separate files through the shared name-based engine', async () => {
@@ -577,7 +674,7 @@ suite('Unit: WorkflowExportViewProvider', () => {
 				allManagedOrgs: [{ id: 'org-1', name: 'Org One' }],
 			},
 		});
-		installMockSessions([session]);
+		SessionManager._setSessionsForTesting([session], false);
 		const exportCalls: { workflowIds: string[]; outputPath?: string }[] = [];
 		stubClient(
 			'getWorkflowExportDefaultDirectory',
@@ -796,8 +893,8 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		});
 
 		assert.deepStrictEqual(
-			calls.map(call => call.workflowIds.length),
-			[25, 1],
+			calls.map(call => call.workflowIds),
+			[rows.slice(0, 25).map(row => row.id), [rows[25].id]],
 		);
 		assert.deepStrictEqual(
 			calls.map(call => call.outputPath),
@@ -813,6 +910,180 @@ suite('Unit: WorkflowExportViewProvider', () => {
 		});
 		assert.strictEqual(messagesOfType(fake, 'exportProgress').at(-1)?.percent, 100);
 		provider.dispose();
+	});
+
+	test('allocates distinct paths for separate workflow exports when generated names are occupied', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'rewst-provider-separate-'));
+		try {
+			await writeFile(join(directory, 'rewst-workflow-wf-1.json'), 'occupied');
+			await writeFile(join(directory, 'rewst-workflow-wf-1-2.json'), 'occupied');
+			const calls: Parameters<typeof editorDataClient.exportWorkflows>[0][] = [];
+			stubClient('exportWorkflows', (async input => {
+				calls.push(input);
+				return exportResult(input.workflowIds, input.outputPath ?? null);
+			}) as typeof editorDataClient.exportWorkflows);
+			const { provider, fake } = await loadProviderCatalog(workflowRows(2), directory);
+
+			await fake.state.listener?.({
+				type: 'startExport',
+				orgId: 'org-1',
+				workflowIds: ['wf-1', 'wf-2'],
+				mode: 'separate',
+			});
+
+			assert.deepStrictEqual(
+				calls.map(({ workflowIds, outputPath }) => ({ workflowIds, outputPath })),
+				[
+					{ workflowIds: ['wf-1'], outputPath: join(directory, 'rewst-workflow-wf-1-3.json') },
+					{ workflowIds: ['wf-2'], outputPath: join(directory, 'rewst-workflow-wf-2.json') },
+				],
+			);
+			assert.deepStrictEqual(
+				messagesOfType(fake, 'exportComplete').at(-1)?.outputPaths,
+				calls.map(call => call.outputPath),
+			);
+			provider.dispose();
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('allocates each workflow bundle inside the selected folder around occupied filenames', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'rewst-provider-bundles-'));
+		try {
+			await writeFile(join(directory, 'rewst-workflows-batch-001-of-002.json'), 'occupied');
+			await writeFile(join(directory, 'rewst-workflows-batch-002-of-002.json'), 'occupied');
+			restores.push(
+				stub(vscode.window, 'showOpenDialog', (async () => [
+					vscode.Uri.file(directory),
+				]) as typeof vscode.window.showOpenDialog),
+			);
+			const calls: Parameters<typeof editorDataClient.exportWorkflows>[0][] = [];
+			stubClient('exportWorkflows', (async input => {
+				calls.push(input);
+				return exportResult(input.workflowIds, input.outputPath ?? null);
+			}) as typeof editorDataClient.exportWorkflows);
+			const rows = workflowRows(26);
+			const { provider, fake } = await loadProviderCatalog(rows, join(directory, 'default'));
+
+			await fake.state.listener?.({ type: 'chooseFolder' });
+			await fake.state.listener?.({
+				type: 'startExport',
+				orgId: 'org-1',
+				workflowIds: rows.map(row => row.id),
+				mode: 'bundle',
+			});
+
+			assert.deepStrictEqual(
+				calls.map(call => [call.workflowIds.length, call.outputPath]),
+				[
+					[25, join(directory, 'rewst-workflows-batch-001-of-002-2.json')],
+					[1, join(directory, 'rewst-workflows-batch-002-of-002-2.json')],
+				],
+			);
+			assert.deepStrictEqual(
+				messagesOfType(fake, 'exportComplete').at(-1)?.outputPaths,
+				calls.map(call => call.outputPath),
+			);
+			provider.dispose();
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('passes a chosen workflow bundle filename verbatim to the backend', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'rewst-provider-file-'));
+		try {
+			const file = join(directory, 'chosen-workflow.json');
+			restores.push(
+				stub(vscode.window, 'showSaveDialog', (async () =>
+					vscode.Uri.file(file)) as typeof vscode.window.showSaveDialog),
+			);
+			const calls: Parameters<typeof editorDataClient.exportWorkflows>[0][] = [];
+			stubClient('exportWorkflows', (async input => {
+				calls.push(input);
+				return exportResult(input.workflowIds, input.outputPath ?? null);
+			}) as typeof editorDataClient.exportWorkflows);
+			const { provider, fake } = await loadProviderCatalog(workflowRows(1), directory);
+
+			await fake.state.listener?.({ type: 'chooseFile', objectCount: 1 });
+			await fake.state.listener?.({
+				type: 'startExport',
+				orgId: 'org-1',
+				workflowIds: ['wf-1'],
+				mode: 'bundle',
+			});
+
+			assert.deepStrictEqual(
+				calls.map(({ workflowIds, outputPath }) => ({ workflowIds, outputPath })),
+				[{ workflowIds: ['wf-1'], outputPath: file }],
+			);
+			provider.dispose();
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('passes explicit file and selected folder paths to template exports', async () => {
+		const directory = await mkdtemp(join(tmpdir(), 'rewst-provider-templates-'));
+		try {
+			const file = join(directory, 'chosen-template.json');
+			await writeFile(join(directory, 'rewst-templates-batch-001-of-001.json'), 'occupied');
+			setActiveOrganization();
+			stubClient('getWorkflowExportDefaultDirectory', (async () =>
+				join(directory, 'default')) as typeof editorDataClient.getWorkflowExportDefaultDirectory);
+			stubClient('listExportTemplates', (async () => [
+				{ ...workflowRows(1)[0], id: 'template-1', name: 'Template One' },
+			]) as typeof editorDataClient.listExportTemplates);
+			const calls: Parameters<typeof editorDataClient.exportObjects>[0][] = [];
+			stubClient('exportObjects', (async input => {
+				calls.push(input);
+				return {
+					status: 'saved',
+					orgId: input.orgId,
+					objectType: input.objectType,
+					objectIds: input.objectIds,
+					outputPath: input.outputPath ?? null,
+				};
+			}) as typeof editorDataClient.exportObjects);
+			restores.push(
+				stub(vscode.window, 'showSaveDialog', (async () =>
+					vscode.Uri.file(file)) as typeof vscode.window.showSaveDialog),
+				stub(vscode.window, 'showOpenDialog', (async () => [
+					vscode.Uri.file(directory),
+				]) as typeof vscode.window.showOpenDialog),
+			);
+			const provider = new WorkflowExportViewProvider(vscode.Uri.file('/extension'));
+			const fake = fakeView();
+			provider.resolveWebviewView(fake.view);
+			await fake.state.listener?.({ type: 'loadCatalog', orgId: 'org-1', objectType: 'template' });
+			await fake.state.listener?.({ type: 'chooseFile', objectType: 'template', objectCount: 1 });
+			const message = {
+				type: 'startExport',
+				orgId: 'org-1',
+				objectType: 'template',
+				objectIds: ['template-1'],
+				mode: 'bundle',
+			};
+			await fake.state.listener?.(message);
+			await fake.state.listener?.({ type: 'chooseFolder', objectType: 'template' });
+			await fake.state.listener?.(message);
+
+			assert.deepStrictEqual(
+				calls.map(({ objectType, objectIds, outputPath }) => ({ objectType, objectIds, outputPath })),
+				[
+					{ objectType: 'template', objectIds: ['template-1'], outputPath: file },
+					{
+						objectType: 'template',
+						objectIds: ['template-1'],
+						outputPath: join(directory, 'rewst-templates-batch-001-of-001-2.json'),
+					},
+				],
+			);
+			provider.dispose();
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
 	});
 
 	test('cancels an in-flight backend export and reports cancelled completion', async () => {

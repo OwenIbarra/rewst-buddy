@@ -37,11 +37,15 @@ function sdkProxy(sessionId: string): Sdk {
 	return new Proxy(Object.create(null) as Sdk, {
 		get(_target, property: string | symbol) {
 			if (typeof property !== 'string' || !SDK_METHODS.has(property)) return undefined;
-			return (args?: unknown) =>
-				invoke(`session.sdk.${property}`, {
+			return (args?: unknown, _requestHeaders?: unknown, signal?: AbortSignal) => {
+				const input = {
 					sessionId,
 					...(args === undefined ? {} : { args }),
-				});
+				};
+				return signal
+					? invoke(`session.sdk.${property}`, input, { signal })
+					: invoke(`session.sdk.${property}`, input);
+			};
 		},
 	}) as Sdk;
 }

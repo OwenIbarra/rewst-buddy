@@ -203,12 +203,12 @@
 						"type": "string"
 					},
 					"default": [],
-					"description": "Additional absolute directories approved for buddy_export_workflows local output. Downloads, active workspace folders, and the current Git checkout are approved automatically. Paths are resolved canonically to prevent traversal and symlink escapes."
+					"description": "Additional absolute directories approved for buddy_export_workflows, buddy_export_templates, and buddy_export_forms local output. Downloads, active workspace folders, and the current Git checkout are approved automatically. Paths are resolved canonically to prevent traversal and symlink escapes."
 				},
 				"rewst-buddy.mcp.exportDefaultDir": {
 					"type": "string",
 					"default": "",
-					"description": "Default directory buddy_export_workflows saves to when no outputPath is given. Must be an absolute path; it is created when missing and automatically approved. Empty uses the cross-OS default (<home>/Downloads/Rewst Exports)."
+					"description": "Default directory the workflow, template, and form export tools save to when no outputPath is given. Must be an absolute path; it is created when missing and automatically approved. Empty uses the cross-OS default (<home>/Downloads/Rewst Exports)."
 				}
 			}
 		},
@@ -398,7 +398,7 @@
 			},
 			{
 				"command": "rewst-buddy.prefix.OpenWorkflowExporter",
-				"title": "Rewst Buddy: Open Workflow Exporter",
+				"title": "Rewst Buddy: Open Rewst Exporter",
 				"icon": "$(export)"
 			},
 			{
@@ -451,6 +451,26 @@
 				"command": "rewst-buddy.BundleTemplates",
 				"title": "Bundle Templates",
 				"icon": "$(package)"
+			},
+			{
+				"command": "rewst-buddy.prefix.ExportTemplates",
+				"title": "Rewst Buddy: Export Templates",
+				"icon": "$(export)"
+			},
+			{
+				"command": "rewst-buddy.ExportTemplates",
+				"title": "Export Templates",
+				"icon": "$(export)"
+			},
+			{
+				"command": "rewst-buddy.prefix.ExportForms",
+				"title": "Rewst Buddy: Export Forms",
+				"icon": "$(export)"
+			},
+			{
+				"command": "rewst-buddy.ExportForms",
+				"title": "Export Forms",
+				"icon": "$(export)"
 			},
 			{
 				"command": "rewst-buddy.prefix.AskRewstAI",
@@ -517,7 +537,7 @@
 				{
 					"type": "webview",
 					"id": "rewst-buddy.workflowExporter",
-					"name": "Workflow Exporter",
+					"name": "Rewst Exporter",
 					"icon": ""
 				},
 				{
@@ -750,6 +770,22 @@
 				},
 				{
 					"command": "rewst-buddy.BundleTemplates",
+					"when": "false"
+				},
+				{
+					"command": "rewst-buddy.prefix.ExportTemplates",
+					"when": "rewst-buddy.anyActiveSessions"
+				},
+				{
+					"command": "rewst-buddy.ExportTemplates",
+					"when": "false"
+				},
+				{
+					"command": "rewst-buddy.prefix.ExportForms",
+					"when": "rewst-buddy.anyActiveSessions"
+				},
+				{
+					"command": "rewst-buddy.ExportForms",
 					"when": "false"
 				}
 			],
